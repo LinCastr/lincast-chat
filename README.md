@@ -66,6 +66,10 @@ node scripts/conversas-smoke-test.js http://localhost:8099
 node scripts/arquivos-smoke-test.js http://localhost:8099
 ```
 
+## License
+
+Free to use, including commercially, but **not to modify**: see [`LICENSE`](LICENSE). This is source-available, not an OSI open-source license.
+
 ## Credits
 
 - `wordle-words.txt` is the five-letter word list from Donald Knuth's Stanford GraphBase.

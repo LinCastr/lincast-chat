@@ -1,0 +1,31 @@
+Lincast Chat License (use freely, do not modify)
+
+Copyright (c) 2026 LinCastr. All rights reserved except as granted below.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated files (the "Software"), to use, run and
+redistribute UNMODIFIED copies of the Software, for any purpose, including
+commercial use, provided that this license text and the copyright notice are
+kept with every copy.
+
+You may NOT, without prior written permission from the copyright holder:
+  1. modify, adapt, translate or build upon the Software, in whole or in part;
+  2. create or distribute derivative works, modified builds or forks that
+     contain changes;
+  3. remove or alter the copyright notice or this license.
+
+Building the Software from the unmodified source for your own use is allowed.
+Contributions sent back to the copyright holder (for example as pull requests)
+are welcome and become part of the Software under this license.
+
+Third-party components keep their own licenses: the Figtree font (SIL Open Font
+License, see v2/cliente/assets/fonts/Figtree-OFL.txt), the Lucide icons (ISC,
+see v2/cliente/assets/icones/LICENSE-lucide), and the word list in
+wordle-words.txt (Stanford GraphBase, Donald E. Knuth).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
