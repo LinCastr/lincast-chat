@@ -1,0 +1,52 @@
+# Runs the conversations smoke suite on every push/PR.
+name: Testes de fumaça
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Conversas (v3). A suíte cria contas e histórico, e o servidor guarda o
+  # `chatdata/` ao lado do `server.js` — por isso roda numa cópia descartável.
+  conversas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Preparar uma cópia descartável do servidor
+        run: |
+          mkdir -p /tmp/srv
+          cp server.js wordle-words.txt /tmp/srv/
+          cd /tmp/srv && npm init -y >/dev/null && npm install ws
+
+      # TOQUE_MS e AVISOS_GRACA_MS só existem para teste: o toque de produção
+      # dura 30s e a suíte não esperaria isso.
+      - name: Subir o servidor
+        run: |
+          cd /tmp/srv
+          WORDLE_PALAVRA=crane TOQUE_MS=1500 AVISOS_GRACA_MS=300 PORT=8099 node server.js > /tmp/servidor.log 2>&1 &
+          echo $! > /tmp/servidor.pid
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null http://localhost:8099/; then exit 0; fi
+            sleep 0.5
+          done
+          echo "O servidor não subiu a tempo:"; cat /tmp/servidor.log; exit 1
+
+      - name: Conversas, grupos, avisos, toque e convite
+        run: NODE_PATH=/tmp/srv/node_modules node scripts/conversas-smoke-test.js http://localhost:8099
+
+      - name: Log do servidor (quando algo falha)
+        if: failure()
+        run: cat /tmp/servidor.log || true
+
+      - name: Derrubar o servidor
+        if: always()
+        run: kill "$(cat /tmp/servidor.pid)" 2>/dev/null || true

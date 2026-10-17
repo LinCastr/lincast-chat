@@ -1,0 +1,67 @@
+# Checks for the Rust client (v2): formatting, clippy and unit tests.
+#
+# Only runs when something under v2/ (or this file) changes, so pushes that only
+# touch the v1 server or docs don't spend Action minutes on the slow libwebrtc
+# build.
+name: v2 (Rust)
+
+on:
+  push:
+    branches: [main]
+    paths: ['v2/**', '.github/workflows/v2.yml']
+  pull_request:
+    paths: ['v2/**', '.github/workflows/v2.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: v2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The prebuilt libwebrtc needs clang 21 or newer; Ubuntu 24.04 ships 18.
+      - name: Install clang 21
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 21
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
+
+      # PipeWire (concord-audio), glib/X11/GBM (libwebrtc), Wayland/xkbcommon
+      # (iced) and V4L2 headers (camera capture).
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libpipewire-0.3-dev libspa-0.2-dev \
+            libglib2.0-dev libgbm-dev libdrm-dev libva-dev \
+            libx11-dev libxext-dev libxfixes-dev libxdamage-dev libxrandr-dev \
+            libxcomposite-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libasound2-dev libpulse-dev libdbus-1-dev libssl-dev linux-libc-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace

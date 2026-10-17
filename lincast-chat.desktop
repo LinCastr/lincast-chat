@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Lincast Chat
+Comment=Lincast Chat desktop client
+Exec=lincast-chat %u
+Icon=lincast-chat
+Type=Application
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+StartupWMClass=lincast-chat
+MimeType=x-scheme-handler/concord;

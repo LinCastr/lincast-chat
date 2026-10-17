@@ -1,0 +1,7 @@
+# O libwebrtc pré-compilado é feito com o libc++ do Chromium e exige clang 21
+# ou mais novo como compilador C/C++ (o build do webrtc-sys confere e para com
+# erro claro se for gcc ou clang velho). Isto só vale quando CC/CXX não estão
+# definidos no ambiente — dá pra apontar pra outro clang exportando CC/CXX.
+[env]
+CC = "clang"
+CXX = "clang++"

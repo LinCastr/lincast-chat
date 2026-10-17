@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lincast Chat</title>
+<meta name="description" content="Lincast Chat: conversas, grupos e chamadas com tela e som de aplicativos. Baixe o app para Linux.">
+<link rel="icon" href="/assets/favicon.png">
+<style>
+  :root {
+    --fundo: #14161a; --cartao: #1d2026; --borda: #2c313a; --texto: #e8eaee;
+    --fraco: #9aa3b2; --destaque: #5b8def; --destaque-texto: #fff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --fundo: #f4f5f7; --cartao: #fff; --borda: #dcdfe5; --texto: #1b1e24; --fraco: #5d6675; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: var(--fundo); color: var(--texto);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { width: min(640px, 100% - 32px); padding: 32px 0; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+  header img { width: 52px; height: 52px; border-radius: 14px; }
+  h1 { margin: 0; font-size: 1.8rem; }
+  .sub { color: var(--fraco); margin: 0 0 24px; }
+  ul { list-style: none; padding: 0; margin: 0 0 28px; display: grid; gap: 10px; }
+  li { background: var(--cartao); border: 1px solid var(--borda); border-radius: 12px; padding: 12px 16px; }
+  li b { display: block; }
+  li span { color: var(--fraco); font-size: .92rem; }
+  .botoes { display: flex; flex-wrap: wrap; gap: 10px; }
+  a.botao {
+    display: inline-block; padding: 11px 20px; border-radius: 10px; text-decoration: none;
+    font-weight: 600; border: 1px solid var(--borda); color: var(--texto); background: var(--cartao);
+  }
+  a.botao.principal { background: var(--destaque); border-color: var(--destaque); color: var(--destaque-texto); }
+  a.botao:hover, a.botao:focus-visible { filter: brightness(1.1); outline: 2px solid var(--destaque); outline-offset: 2px; }
+  footer { margin-top: 28px; color: var(--fraco); font-size: .88rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/assets/favicon.png" alt="" width="52" height="52">
+    <h1>Lincast Chat</h1>
+  </header>
+  <p class="sub">Chat e chamadas entre amigos, num app nativo para Linux.</p>
+  <ul>
+    <li><b>Conversas e grupos</b><span>Mensagens diretas com amigos e grupos sem limite de pessoas, com reações, respostas e favoritos.</span></li>
+    <li><b>Chamadas com toque</b><span>Ligue para uma conversa e escolha atender, recusar ou tocar de novo.</span></li>
+    <li><b>Tela e som de aplicativos</b><span>Compartilhe a tela com o áudio só dos aplicativos que você escolher, sem o microfone vazar.</span></li>
+    <li><b>Extras</b><span>Wordle diário do grupo, soundboard, quadro branco, roletas e enquetes.</span></li>
+  </ul>
+  <div class="botoes">
+    <a class="botao principal" href="https://github.com/LinCastr/lincast-chat-releases/releases/latest">Baixar o app</a>
+    <a class="botao" href="https://github.com/LinCastr/lincast-chat-releases/releases">Todas as versões</a>
+  </div>
+  <footer>Esta página é só informativa: o login e o chat acontecem dentro do app.</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Workspace da v2. Tudo compila no mesmo `target/`, o que importa porque o
+# libwebrtc é pesado (compilar duas vezes seria minutos à toa) e porque o
+# `concord-audio` tem que sair na mesma pasta do app que o chama.
+[workspace]
+resolver = "3"
+members = ["cliente", "concord-audio"]
+
+[profile.dev.package."*"]
+# Dependências otimizadas mesmo no build de desenvolvimento: codificar vídeo e
+# desenhar a interface sem otimização deixa tudo lento demais pra testar.
+opt-level = 2

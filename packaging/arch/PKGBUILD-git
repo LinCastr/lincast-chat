@@ -1,0 +1,44 @@
+# Maintainer: Val <val@lincast.org>
+pkgname=lincast-chat-git
+pkgver=0.1.0.r0.gce0343d
+pkgrel=1
+pkgdesc="Fast, low-latency native VoIP and screen sharing client for Linux (git version)"
+arch=('x86_64')
+url="https://github.com/LinCastr/lincast-chat"
+license=('AGPL-3.0-or-later')
+provides=('lincast-chat')
+conflicts=('lincast-chat')
+depends=(
+    'glibc'
+    'gcc-libs'
+    'pipewire'
+    'openssl'
+    'libxkbcommon'
+    'wayland'
+    'libx11'
+    'gtk3'
+    'hicolor-icon-theme'
+)
+makedepends=(
+    'git'
+    'cargo'
+    'desktop-file-utils'
+)
+source=('git+https://github.com/LinCastr/lincast-chat.git')
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/lincast-chat"
+    git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' ||
+    printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD 2>/dev/null || echo 0)" "$(git rev-parse --short HEAD 2>/dev/null || echo 0000000)"
+}
+
+build() {
+    cd "$srcdir/lincast-chat"
+    cargo build --release --locked --manifest-path v2/Cargo.toml
+}
+
+package() {
+    cd "$srcdir/lincast-chat"
+    make install DESTDIR="$pkgdir" PREFIX=/usr
+}

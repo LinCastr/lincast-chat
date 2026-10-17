@@ -1,0 +1,36 @@
+[package]
+name = "lincast-chat"
+version = "0.2.1"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "global_shortcuts", "screencast"] }
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+directories = "6.0.0"
+env_logger = "0.11.11"
+fastrand = "2.5"
+futures-util = "0.3.34"
+# Sem a feature padrão "web-colors": com ela o iced escolhe o primeiro formato
+# não-sRGB da janela, e no Vulkan da NVIDIA esse é o Rgba16Float (linear). As
+# cores saem com o gama aplicado duas vezes e a janela fica lavada. Sem ela o
+# iced escolhe um formato sRGB e converte o gama ele mesmo.
+iced = { version = "0.14", default-features = false, features = [
+    "wgpu", "tiny-skia", "crisp", "thread-pool", "linux-theme-detection", "x11", "wayland",
+    "tokio", "image", "advanced", "canvas", "svg",
+] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
+libwebrtc = { version = "0.3.51", features = ["glib-main-loop"] }
+log = "0.4.34"
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control", "image-data"] }
+rfd = "0.17"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.2", features = ["full"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+sha2 = "0.10"
+ureq = { version = "3.4.2", features = ["json"] }
+v4l = "0.14.0"

@@ -1,0 +1,12 @@
+[package]
+name = "concord-audio"
+version = "0.2.1"
+edition = "2024"
+description = "Captura de áudio por aplicativo (PipeWire). Processo à parte de propósito: NÃO pode linkar o libwebrtc."
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+pipewire = { version = "0.10", features = ["v0_3_44"] }

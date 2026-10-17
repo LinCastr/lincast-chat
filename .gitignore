@@ -1,0 +1,26 @@
+# Chaves, segredos e credenciais
+*.key
+*.pem
+.env
+.env.*
+.discord-oauth.json
+.discord-bot.json
+.giphy.json
+
+# Estado e dados do chat
+.contas
+.sessoes
+.salas
+.salas-conf
+.chatkey
+chatdata/
+
+# Artefatos de compilação e dependências
+target/
+node_modules/
+dist/
+build/
+*.log
+
+# Ferramentas locais
+.serena/
