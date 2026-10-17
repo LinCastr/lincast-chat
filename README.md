@@ -27,16 +27,18 @@ Direct messages and groups, calls that ring, profiles with game lists, and **scr
 | `scripts/` | Smoke tests, deploy and install scripts. |
 | `packaging/` | Arch (PKGBUILD) and AppImage recipes. |
 
-## Install the client (Linux)
+## Install the client (Linux x86_64)
 
-Download `lincast-chat-<version>-linux-x86_64.tar.gz` from the [releases](https://github.com/LinCastr/lincast-chat-releases/releases), extract it and run:
+One line (downloads the latest release, verifies its SHA-256 and installs to `~/.local`):
 
 ```bash
-./install.sh --user
+curl -fsSL https://raw.githubusercontent.com/LinCastr/lincast-chat/main/install.sh | bash
 ```
 
+Prefer to read the script first? It is [`install.sh`](install.sh). Packages are also on the [releases page](https://github.com/LinCastr/lincast-chat-releases/releases): extract `lincast-chat-<version>-linux-x86_64.tar.gz` and run `./install.sh --user`.
+
 Requirements: PipeWire, `xdg-desktop-portal` with a ScreenCast backend (e.g. `xdg-desktop-portal-hyprland`), `wpctl` for system volume.
-The app checks for a new release every time it opens and **updates itself** (it downloads the tarball, verifies the SHA-256 published with the release, swaps the binaries and restarts). *Settings → Sistema → Verificar atualização* does the same on demand. Installs in a read-only location (e.g. `/usr/bin` via a package) cannot self-update; use your package manager.
+The app checks for a new release every time it opens and **updates itself** (it downloads the tarball, verifies the SHA-256 published with the release, swaps the binaries and restarts). *Settings → Sistema → Verificar atualização* does the same on demand. Installs in a read-only location (e.g. a distro package) cannot self-update; use your package manager.
 
 ## Build from source
 
@@ -68,9 +70,10 @@ node scripts/arquivos-smoke-test.js http://localhost:8099
 
 ## License
 
-Free to use, including commercially, but **not to modify**: see [`LICENSE`](LICENSE). This is source-available, not an OSI open-source license.
+[GNU General Public License v3.0](LICENSE). Third-party components keep their own licenses (see Credits).
 
 ## Credits
 
 - `wordle-words.txt` is the five-letter word list from Donald Knuth's Stanford GraphBase.
+- The Figtree font is under the SIL Open Font License (`v2/cliente/assets/fonts/Figtree-OFL.txt`).
 - Icons are from [Lucide](https://lucide.dev) (ISC License).
