@@ -490,6 +490,30 @@ pub fn classifica_conexao(perda: Option<f64>, rtt_ms: Option<u64>) -> &'static s
     }
 }
 
+/// Põe o som da transmissão (fonte própria, `NativeAudioSource`) sempre num
+/// transceptor NOVO. Com `add_track`, o WebRTC reaproveita um transceptor de
+/// áudio que a oferta do outro lado criou (ele transmitiu antes, ou os dois
+/// começaram juntos e houve colisão); esse fluxo nasceu sem trilha, fica
+/// registrado no módulo de áudio como fluxo do microfone e passa a receber o
+/// microfone (thread do Pulse) e o som dos apps (task do tokio) ao mesmo tempo:
+/// `audio_send_stream.cc:404 Check failed: !race_checker.RaceDetected()` e o
+/// app aborta. Reproduzido em `tests::corrida_adm_com_som_de_apps`.
+pub fn adiciona_audio_de_tela(
+    pc: &PeerConnection,
+    audio: &RtcAudioTrack,
+    ids: &[impl AsRef<str>],
+) -> std::result::Result<RtpSender, libwebrtc::RtcError> {
+    pc.add_transceiver(
+        MediaStreamTrack::Audio(audio.clone()),
+        libwebrtc::rtp_transceiver::RtpTransceiverInit {
+            direction: libwebrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv,
+            stream_ids: ids.iter().map(|i| i.as_ref().to_string()).collect(),
+            send_encodings: Vec::new(),
+        },
+    )
+    .map(|t| t.sender())
+}
+
 pub fn configura_remetente_tela(
     sender: &RtpSender,
     perfil: captura_tela::PerfilTela,
@@ -1106,7 +1130,9 @@ impl Ator {
     async fn publica_meu_estado(&mut self) {
         let ev = Evento::MeuEstado {
             na_chamada: self.na_chamada,
-            mudo: self.mudo,
+            // Surdo implica mudo: a interface nunca mostra o microfone aberto
+            // com o fone desligado.
+            mudo: self.mudo || self.surdo,
             surdo: self.surdo,
             apresentando: self.tela.is_some(),
             com_camera: self.camera.is_some(),
@@ -1491,6 +1517,13 @@ impl Ator {
                     return Ok(());
                 }
                 self.mudo = m;
+                // Abrir o microfone com o fone desligado religa o fone (como no
+                // Discord): não existe microfone aberto em quem está surdo.
+                if !m && self.surdo {
+                    self.surdo = false;
+                    self.fabrica.set_adm_playout_enabled(true);
+                    self.envia(json!({ "type": "deafen-state", "deafened": false }));
+                }
                 self.aplica_mic();
                 if !self.surdo {
                     self.envia(json!({ "type": "mic-state", "muted": m }));
@@ -1610,7 +1643,9 @@ impl Ator {
                     cfg.entrada_nome = Some(d.nome.clone());
                 }
                 crate::dispositivos::salva_config(&cfg);
-                if self.na_chamada && self.mic.is_some() {
+                if self.na_chamada
+                    && let Some(antigo) = self.mic.as_ref().map(|m| m.id())
+                {
                     let novo_mic = self.fabrica.create_device_audio_track("lincast-mic");
                     let mut ligado = !(self.mudo || self.surdo);
                     if self.ptt_ativo && ligado {
@@ -1620,8 +1655,11 @@ impl Ator {
                     self.mic = Some(novo_mic.clone());
                     for p in self.pares.values() {
                         for sender in p.pc.senders() {
-                            if let Some(libwebrtc::media_stream_track::MediaStreamTrack::Audio(_)) =
+                            // Só o remetente do microfone: o som da transmissão
+                            // também é áudio e não pode virar microfone.
+                            if let Some(libwebrtc::media_stream_track::MediaStreamTrack::Audio(t)) =
                                 sender.track()
+                                && t.id() == antigo
                             {
                                 let _ = sender.set_track(Some(
                                     libwebrtc::media_stream_track::MediaStreamTrack::Audio(
@@ -2062,7 +2100,7 @@ impl Ator {
                 par.remetentes_tela.push(s);
             }
             if let Some(a) = &audio
-                && let Ok(s) = par.pc.add_track(MediaStreamTrack::Audio(a.clone()), &ids)
+                && let Ok(s) = adiciona_audio_de_tela(&par.pc, a, &ids)
             {
                 par.remetentes_tela.push(s);
             }
@@ -2929,7 +2967,7 @@ impl Ator {
                 remetentes_tela.push(s);
             }
             if let Some(a) = &t.audio
-                && let Ok(s) = pc.add_track(MediaStreamTrack::Audio(a.clone()), &ids)
+                && let Ok(s) = adiciona_audio_de_tela(&pc, a, &ids)
             {
                 remetentes_tela.push(s);
             }
@@ -3266,6 +3304,264 @@ fn inicia_audio_de_apps(apps: &[String]) -> Result<(NativeAudioSource, tokio::pr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Oferta de `de`, resposta de `para`.
+    async fn negocia_teste(de: &PeerConnection, para: &PeerConnection) {
+        let oferta = de
+            .create_offer(opcoes_de_oferta_teste())
+            .await
+            .expect("offer");
+        de.set_local_description(oferta.clone())
+            .await
+            .expect("local");
+        para.set_remote_description(oferta).await.expect("remota");
+        let resposta = para
+            .create_answer(AnswerOptions::default())
+            .await
+            .expect("answer");
+        para.set_local_description(resposta.clone())
+            .await
+            .expect("local");
+        de.set_remote_description(resposta).await.expect("remota");
+    }
+
+    /// As mesmas opções de oferta do app (`negocia`).
+    fn opcoes_de_oferta_teste() -> OfferOptions {
+        OfferOptions {
+            offer_to_receive_audio: true,
+            offer_to_receive_video: true,
+            ..Default::default()
+        }
+    }
+
+    /// Trilha de vídeo de tela (sem quadros: só ocupa o transceptor como no app).
+    fn video_de_tela_teste(fabrica: &PeerConnectionFactory, rotulo: &str) -> MediaStreamTrack {
+        let fonte = libwebrtc::video_source::native::NativeVideoSource::new(
+            libwebrtc::video_source::VideoResolution {
+                width: 1280,
+                height: 720,
+            },
+            true,
+        );
+        MediaStreamTrack::Video(fabrica.create_video_track(rotulo, fonte))
+    }
+
+    fn fonte_de_apps_teste() -> NativeAudioSource {
+        NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            TAXA,
+            CANAIS,
+            0,
+        )
+    }
+
+    /// Reprodução dos itens 4 e 5 (crash ao transmitir com som): duas
+    /// pontas com microfone do ADM e, depois de conectadas, o som dos apps
+    /// entrando por renegociação, como no app. Core dump real (2026-10-18):
+    /// `audio_send_stream.cc:404 Check failed: !race_checker.RaceDetected()`
+    /// com a thread de gravação do Pulse (`AudioTransportImpl`) de um lado e
+    /// o `capture_frame` do som dos apps do outro, no mesmo `AudioSendStream`.
+    /// `CENARIO=sequencial` (A transmite, depois B) e `CENARIO=colisao` (os
+    /// dois juntos, com rollback) caíam; `antes`, `renegocia` e `rollback`
+    /// não. Por padrão usa a correção (`adiciona_audio_de_tela`); `ANTIGO=1`
+    /// usa o `add_track` de antes. `SEM_ADM=1` desliga a gravação do ADM.
+    /// `cargo test -p lincast-chat corrida_adm -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn corrida_adm_com_som_de_apps() {
+        let cenario = std::env::var("CENARIO").unwrap_or_else(|_| "renegocia".into());
+        println!("cenário: {cenario}");
+        let fabrica = PeerConnectionFactory::default();
+        assert!(fabrica.acquire_platform_adm(), "sem ADM da plataforma");
+        // Igual ao `entra_na_chamada` (o padrão é não gravar).
+        fabrica.set_adm_recording_enabled(std::env::var_os("SEM_ADM").is_none());
+        fabrica.set_adm_playout_enabled(true);
+        let a = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc a");
+        let b = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc b");
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+        a.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_a.send(c);
+        })));
+        b.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_b.send(c);
+        })));
+        let (tx_estado, mut rx_estado) = tokio::sync::mpsc::unbounded_channel();
+        a.on_connection_state_change(Some(Box::new(move |e| {
+            let _ = tx_estado.send(e);
+        })));
+        let (a2, b2) = (a.clone(), b.clone());
+        tokio::spawn(async move {
+            while let Some(c) = rx_a.recv().await {
+                let _ = b2.add_ice_candidate(c).await;
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(c) = rx_b.recv().await {
+                let _ = a2.add_ice_candidate(c).await;
+            }
+        });
+
+        // Microfone dos dois lados, como na chamada.
+        let mic_a = fabrica.create_device_audio_track("mic-a");
+        let mic_b = fabrica.create_device_audio_track("mic-b");
+        a.add_track(MediaStreamTrack::Audio(mic_a), &["voz-a".to_string()])
+            .expect("mic a");
+        b.add_track(MediaStreamTrack::Audio(mic_b), &["voz-b".to_string()])
+            .expect("mic b");
+        let fonte_a = fonte_de_apps_teste();
+        let fonte_b = fonte_de_apps_teste();
+        let apps_a = fabrica.create_audio_track("apps-a", fonte_a.clone());
+        let apps_b = fabrica.create_audio_track("apps-b", fonte_b.clone());
+        // Como o app põe o som dos apps; `ANTIGO=1` volta ao `add_track` (o bug).
+        let antigo = std::env::var_os("ANTIGO").is_some();
+        let poe_apps = |pc: &PeerConnection, t: &RtcAudioTrack, id: &str| {
+            if antigo {
+                pc.add_track(MediaStreamTrack::Audio(t.clone()), &[id.to_string()])
+                    .expect("apps (add_track)");
+            } else {
+                adiciona_audio_de_tela(pc, t, &[id]).expect("apps (transceptor novo)");
+            }
+        };
+        if cenario == "antes" {
+            a.add_track(
+                video_de_tela_teste(&fabrica, "video-a"),
+                &["tela-a".to_string()],
+            )
+            .expect("video a");
+            poe_apps(&a, &apps_a, "tela-a");
+        }
+        negocia_teste(&a, &b).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(e) = rx_estado.recv().await {
+                println!("conexão: {e:?}");
+                if e == PeerConnectionState::Connected {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("as duas pontas não conectaram");
+
+        match cenario.as_str() {
+            "antes" => {}
+            "colisao" => {
+                // Os dois começam a transmitir juntos: duas ofertas cruzadas.
+                a.add_track(
+                    video_de_tela_teste(&fabrica, "video-a"),
+                    &["tela-a".to_string()],
+                )
+                .expect("video a");
+                poe_apps(&a, &apps_a, "tela-a");
+                b.add_track(
+                    video_de_tela_teste(&fabrica, "video-b"),
+                    &["tela-b".to_string()],
+                )
+                .expect("video b");
+                poe_apps(&b, &apps_b, "tela-b");
+                let oferta_a = a
+                    .create_offer(opcoes_de_oferta_teste())
+                    .await
+                    .expect("offer a");
+                a.set_local_description(oferta_a.clone())
+                    .await
+                    .expect("local a");
+                let oferta_b = b
+                    .create_offer(opcoes_de_oferta_teste())
+                    .await
+                    .expect("offer b");
+                b.set_local_description(oferta_b).await.expect("local b");
+                // B é o educado: desfaz a própria oferta e aceita a de A.
+                let rb = SessionDescription::parse("", SdpType::Rollback).expect("rollback");
+                b.set_local_description(rb).await.expect("rollback b");
+                b.set_remote_description(oferta_a).await.expect("remota b");
+                let resposta = b
+                    .create_answer(AnswerOptions::default())
+                    .await
+                    .expect("answer b");
+                b.set_local_description(resposta.clone())
+                    .await
+                    .expect("local b");
+                a.set_remote_description(resposta).await.expect("remota a");
+                // E renegocia a trilha que ficou pendente.
+                negocia_teste(&b, &a).await;
+            }
+            "sequencial" => {
+                // A transmite primeiro; depois B transmite (sem colisão).
+                a.add_track(
+                    video_de_tela_teste(&fabrica, "video-a"),
+                    &["tela-a".to_string()],
+                )
+                .expect("video a");
+                poe_apps(&a, &apps_a, "tela-a");
+                negocia_teste(&a, &b).await;
+                b.add_track(
+                    video_de_tela_teste(&fabrica, "video-b"),
+                    &["tela-b".to_string()],
+                )
+                .expect("video b");
+                poe_apps(&b, &apps_b, "tela-b");
+                negocia_teste(&b, &a).await;
+            }
+            "rollback" => {
+                // Só o rollback: B oferece com a tela, desfaz e renegocia.
+                b.add_track(
+                    video_de_tela_teste(&fabrica, "video-b"),
+                    &["tela-b".to_string()],
+                )
+                .expect("video b");
+                poe_apps(&b, &apps_b, "tela-b");
+                let oferta_b = b
+                    .create_offer(opcoes_de_oferta_teste())
+                    .await
+                    .expect("offer b");
+                b.set_local_description(oferta_b).await.expect("local b");
+                let rb = SessionDescription::parse("", SdpType::Rollback).expect("rollback");
+                b.set_local_description(rb).await.expect("rollback b");
+                negocia_teste(&b, &a).await;
+            }
+            _ => {
+                a.add_track(
+                    video_de_tela_teste(&fabrica, "video-a"),
+                    &["tela-a".to_string()],
+                )
+                .expect("video a");
+                poe_apps(&a, &apps_a, "tela-a");
+                negocia_teste(&a, &b).await;
+            }
+        }
+        println!("negociado; empurrando o som dos apps por 20 s");
+
+        let empurra = |fonte: NativeAudioSource| async move {
+            let quadro = AudioFrame::new(TAXA, CANAIS, TAXA / 100);
+            let mut ritmo = tokio::time::interval(Duration::from_millis(10));
+            let fim = std::time::Instant::now() + Duration::from_secs(20);
+            let mut n = 0u32;
+            while std::time::Instant::now() < fim {
+                ritmo.tick().await;
+                let _ = fonte.capture_frame(&quadro).await;
+                n += 1;
+            }
+            n
+        };
+        let (na, nb) = tokio::join!(
+            tokio::spawn(empurra(fonte_a)),
+            tokio::spawn(empurra(fonte_b))
+        );
+        println!(
+            "sem crash: {} + {} quadros de som de apps em 20 s",
+            na.unwrap_or(0),
+            nb.unwrap_or(0)
+        );
+    }
 
     #[test]
     fn escada_bitrate_fracoes_e_piso() {

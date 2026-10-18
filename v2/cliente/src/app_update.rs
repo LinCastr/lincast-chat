@@ -2278,9 +2278,11 @@ impl App {
                 let cfg = dispositivos::carrega_config();
                 let entrada_sel = cfg
                     .entrada_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| entradas.first().map(|d| d.guid.clone()));
                 let saida_sel = cfg
                     .saida_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| saidas.first().map(|d| d.guid.clone()));
                 self.painel_audio.entradas = entradas;
                 self.painel_audio.saidas = saidas;

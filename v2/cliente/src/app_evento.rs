@@ -167,7 +167,7 @@ impl App {
                     .find(|v| v.dono == q.dono && v.de_tela == q.de_tela)
                 {
                     Some(v) => {
-                        v.imagem = imagem;
+                        v.anterior = Some(std::mem::replace(&mut v.imagem, imagem));
                         v.largura = q.largura;
                         v.altura = q.altura;
                     }
@@ -177,6 +177,7 @@ impl App {
                         largura: q.largura,
                         altura: q.altura,
                         imagem,
+                        anterior: None,
                     }),
                 }
             }
@@ -220,9 +221,11 @@ impl App {
                 let cfg = dispositivos::carrega_config();
                 let entrada_sel = cfg
                     .entrada_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| entradas.first().map(|d| d.guid.clone()));
                 let saida_sel = cfg
                     .saida_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| saidas.first().map(|d| d.guid.clone()));
                 if let Some(pa) = &mut s.painel_audio {
                     pa.entradas = entradas.clone();
@@ -430,9 +433,11 @@ impl App {
                 let cfg = dispositivos::carrega_config();
                 let entrada_sel = cfg
                     .entrada_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| entradas.first().map(|d| d.guid.clone()));
                 let saida_sel = cfg
                     .saida_guid
+                    .filter(|g| !g.is_empty())
                     .or_else(|| saidas.first().map(|d| d.guid.clone()));
                 if let Some(pa) = &mut c.painel_audio {
                     pa.entradas = entradas.clone();
@@ -468,7 +473,7 @@ impl App {
                     .find(|v| v.dono == q.dono && v.de_tela == q.de_tela)
                 {
                     Some(v) => {
-                        v.imagem = imagem;
+                        v.anterior = Some(std::mem::replace(&mut v.imagem, imagem));
                         v.largura = q.largura;
                         v.altura = q.altura;
                     }
@@ -478,6 +483,7 @@ impl App {
                         largura: q.largura,
                         altura: q.altura,
                         imagem,
+                        anterior: None,
                     }),
                 }
             }

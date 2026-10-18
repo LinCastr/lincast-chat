@@ -44,6 +44,8 @@ impl SalaAberta {
             if let Some(b) = &m.imagem
                 && !self.imagens.contains_key(&m.id)
             {
+                // GIF enviado como imagem também anda (o iced só mostra o 1º quadro).
+                crate::gifanim::prepara(&crate::gifanim::chave_mensagem(&m.id), b.clone());
                 self.imagens
                     .insert(m.id.clone(), image::Handle::from_bytes(b.clone()));
             } else if let Some(url) = &m.gif
@@ -944,6 +946,7 @@ impl SalaAberta {
                     .insert(url, image::Handle::from_bytes(bytes));
             }
             Msg::GifBaixado { id, bytes } => {
+                crate::gifanim::prepara(&crate::gifanim::chave_mensagem(&id), bytes.clone());
                 self.imagens.insert(id, image::Handle::from_bytes(bytes));
             }
             Msg::EnviaGif(url) => {

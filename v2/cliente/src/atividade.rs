@@ -210,6 +210,94 @@ pub fn eh_lancador(id: &str, nome: Option<&str>) -> bool {
     false
 }
 
+/// Players de música aceitos, comparados com cada trecho do nome MPRIS
+/// (`org.mpris.MediaPlayer2.<nome>`, cortado nos pontos e sem número no fim:
+/// `org.gnome.Rhythmbox3` → `rhythmbox`). Navegador, player de vídeo e
+/// repetidor (`playerctld`, `kdeconnect`) não entram: tocam qualquer coisa.
+pub const PLAYERS_DE_MUSICA: &[&str] = &[
+    "spotify",
+    "spotifyd",
+    "spotify_player",
+    "spotube",
+    "ncspot",
+    "psst",
+    "spot",
+    "youtubemusic",
+    "youtube-music",
+    "youtube_music",
+    "ytmdesktop",
+    "pear-desktop",
+    "sonora",
+    "cider",
+    "feishin",
+    "supersonic",
+    "sonixd",
+    "sublimemusic",
+    "tidal-hifi",
+    "deezer",
+    "nuclear",
+    "harmonoid",
+    "rhythmbox",
+    "elisa",
+    "lollypop",
+    "amberol",
+    "g4music",
+    "strawberry",
+    "clementine",
+    "audacious",
+    "quodlibet",
+    "deadbeef",
+    "tauon",
+    "cmus",
+    "mpd",
+    "mopidy",
+    "musikcube",
+    "termusic",
+    "kew",
+    "fooyin",
+    "euphonica",
+    "gapless",
+    "high-tide",
+];
+
+/// Sites de música: o que vem de navegador só vale se a faixa for de um deles.
+const SITES_DE_MUSICA: &[&str] = &[
+    "music.youtube.com",
+    "open.spotify.com",
+    "music.apple.com",
+    "deezer.com",
+    "listen.tidal.com",
+    "soundcloud.com",
+    "bandcamp.com",
+    "music.amazon.com",
+];
+
+/// Diz se um serviço MPRIS é música de verdade: player de música conhecido,
+/// ou qualquer outro (navegador) tocando um site de música.
+pub fn eh_player_de_musica(servico: &str, url: &str) -> bool {
+    let nome = servico
+        .strip_prefix("org.mpris.MediaPlayer2.")
+        .unwrap_or(servico)
+        .to_lowercase();
+    let eh_player = nome.split('.').any(|trecho| {
+        let sem_numero = trecho.trim_end_matches(|c: char| c.is_ascii_digit());
+        PLAYERS_DE_MUSICA.contains(&sem_numero)
+    });
+    if eh_player {
+        return true;
+    }
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|s| s.split(['/', '?', '#']).next())
+        .unwrap_or("")
+        .to_lowercase();
+    !host.is_empty()
+        && SITES_DE_MUSICA
+            .iter()
+            .any(|site| host == *site || host.ends_with(&format!(".{site}")))
+}
+
 /// Verifica se uma faixa MPRIS é um vídeo comum do YouTube e não música real.
 pub fn eh_youtube_que_nao_e_musica(url: &str, arte: &str) -> bool {
     if !url.is_empty()
@@ -906,7 +994,8 @@ pub fn detecta_musica_linux() -> Option<MusicaAtividade> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if eh_youtube_que_nao_e_musica(url, arte) {
+        // Só música: navegador tocando X, vídeo ou qualquer site não conta.
+        if !eh_player_de_musica(servico, url) || eh_youtube_que_nao_e_musica(url, arte) {
             continue;
         }
 
@@ -1042,6 +1131,51 @@ mod tests {
         assert!(eh_lancador("custom", Some("SKLauncher")));
         assert!(!eh_lancador("org.vinegarhq.Sober", Some("Roblox Player")));
         assert!(!eh_lancador("hl2", Some("Half-Life 2")));
+    }
+
+    #[test]
+    fn so_player_de_musica_conta_como_musica() {
+        // Navegador no X (o caso real: Brave, integração do Plasma e playerctld).
+        assert!(!eh_player_de_musica(
+            "org.mpris.MediaPlayer2.brave.instance49774",
+            ""
+        ));
+        assert!(!eh_player_de_musica(
+            "org.mpris.MediaPlayer2.plasma-browser-integration",
+            "https://x.com/home"
+        ));
+        assert!(!eh_player_de_musica(
+            "org.mpris.MediaPlayer2.playerctld",
+            "https://x.com/home"
+        ));
+        assert!(!eh_player_de_musica("org.mpris.MediaPlayer2.vlc", ""));
+        assert!(!eh_player_de_musica("org.mpris.MediaPlayer2.mpv", ""));
+        assert!(!eh_player_de_musica(
+            "org.mpris.MediaPlayer2.firefox.instance_1_9",
+            "https://www.youtube.com/watch?v=abc"
+        ));
+        assert!(!eh_player_de_musica(
+            "org.mpris.MediaPlayer2.chromium.instance1",
+            "https://notmusic.youtube.com.evil.net/"
+        ));
+        // Players de música e sites de música no navegador.
+        assert!(eh_player_de_musica("org.mpris.MediaPlayer2.spotify", ""));
+        assert!(eh_player_de_musica(
+            "org.mpris.MediaPlayer2.YoutubeMusic",
+            ""
+        ));
+        assert!(eh_player_de_musica(
+            "org.mpris.MediaPlayer2.org.gnome.Rhythmbox3",
+            ""
+        ));
+        assert!(eh_player_de_musica(
+            "org.mpris.MediaPlayer2.plasma-browser-integration",
+            "https://music.youtube.com/watch?v=abc"
+        ));
+        assert!(eh_player_de_musica(
+            "org.mpris.MediaPlayer2.brave.instance2",
+            "https://open.spotify.com/track/1"
+        ));
     }
 
     #[test]

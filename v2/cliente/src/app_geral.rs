@@ -160,8 +160,8 @@ impl App {
         let painel_audio = PainelAudio {
             entradas: Vec::new(),
             saidas: Vec::new(),
-            entrada_selecionada: cfg_audio.entrada_guid,
-            saida_selecionada: cfg_audio.saida_guid,
+            entrada_selecionada: cfg_audio.entrada_guid.filter(|g| !g.is_empty()),
+            saida_selecionada: cfg_audio.saida_guid.filter(|g| !g.is_empty()),
             testando_mic: false,
             nivel_mic: 0.0,
         };

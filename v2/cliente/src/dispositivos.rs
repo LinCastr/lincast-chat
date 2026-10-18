@@ -51,6 +51,24 @@ pub fn salva_config(config: &ConfigDispositivos) {
     }
 }
 
+/// Prefixo da chave de um dispositivo que o libwebrtc devolveu sem GUID.
+const CHAVE_POR_NOME: &str = "nome:";
+
+/// Chave estável do dispositivo. No Linux (PulseAudio/PipeWire) o libwebrtc
+/// devolve o GUID **vazio** para todos: com ele como chave, todos ficavam
+/// iguais, a escolha não era lembrada e o aplicado era sempre o primeiro. Sem
+/// GUID, vale o nome; o "default: <nome do padrão atual>" vira só "default",
+/// porque o nome dele muda quando o padrão do sistema muda.
+pub fn chave_do_dispositivo(nome: &str, guid: &str) -> String {
+    if !guid.is_empty() {
+        guid.to_string()
+    } else if nome == "default" || nome.starts_with("default:") {
+        format!("{CHAVE_POR_NOME}default")
+    } else {
+        format!("{CHAVE_POR_NOME}{nome}")
+    }
+}
+
 /// Lista todas as entradas (microfones) e saídas (fones/alto-falantes) disponíveis.
 pub fn lista_dispositivos(
     fabrica: &PeerConnectionFactory,
@@ -59,7 +77,7 @@ pub fn lista_dispositivos(
     let num_rec = fabrica.recording_devices();
     for i in 0..num_rec.max(0) as u16 {
         let nome = fabrica.recording_device_name(i);
-        let guid = fabrica.recording_device_guid(i);
+        let guid = chave_do_dispositivo(&nome, &fabrica.recording_device_guid(i));
         entradas.push(DispositivoAudio {
             indice: i,
             nome,
@@ -71,7 +89,7 @@ pub fn lista_dispositivos(
     let num_play = fabrica.playout_devices();
     for i in 0..num_play.max(0) as u16 {
         let nome = fabrica.playout_device_name(i);
-        let guid = fabrica.playout_device_guid(i);
+        let guid = chave_do_dispositivo(&nome, &fabrica.playout_device_guid(i));
         saidas.push(DispositivoAudio {
             indice: i,
             nome,
@@ -113,14 +131,59 @@ pub fn salva_dispositivo_reproducao(guid: &str) {
     salva_config(&cfg);
 }
 
-/// Aplica o dispositivo de gravação (microfone).
+/// Índice atual do dispositivo com esta chave (a lista muda quando se pluga algo).
+fn indice_da_chave(lista: &[DispositivoAudio], chave: &str) -> Option<u16> {
+    lista.iter().find(|d| d.guid == chave).map(|d| d.indice)
+}
+
+/// Aplica o dispositivo de gravação (microfone). Chave vazia (config antiga,
+/// de quando o GUID vinha vazio) não aplica nada: fica o padrão do sistema.
 pub fn aplica_dispositivo_gravacao(fabrica: &PeerConnectionFactory, guid: &str) -> bool {
-    fabrica.set_recording_device_by_guid(guid)
+    if !guid.starts_with(CHAVE_POR_NOME) {
+        return !guid.is_empty() && fabrica.set_recording_device_by_guid(guid);
+    }
+    let (entradas, _) = lista_dispositivos(fabrica);
+    indice_da_chave(&entradas, guid).is_some_and(|i| troca_gravacao(fabrica, i))
+}
+
+/// O ADM do PulseAudio recusa trocar de microfone com a gravação já iniciada
+/// (no meio da chamada): para, troca e volta a gravar.
+fn troca_gravacao(fabrica: &PeerConnectionFactory, indice: u16) -> bool {
+    if fabrica.set_recording_device(indice) {
+        return true;
+    }
+    if !fabrica.recording_is_initialized() {
+        return false;
+    }
+    fabrica.stop_recording();
+    let ok = fabrica.set_recording_device(indice);
+    fabrica.init_recording();
+    fabrica.start_recording();
+    ok
+}
+
+/// Mesmo caso da saída: com a reprodução iniciada, para, troca e volta.
+fn troca_reproducao(fabrica: &PeerConnectionFactory, indice: u16) -> bool {
+    if fabrica.set_playout_device(indice) {
+        return true;
+    }
+    if !fabrica.playout_is_initialized() {
+        return false;
+    }
+    fabrica.stop_playout();
+    let ok = fabrica.set_playout_device(indice);
+    fabrica.init_playout();
+    fabrica.start_playout();
+    ok
 }
 
 /// Aplica o dispositivo de reprodução (saída).
 pub fn aplica_dispositivo_reproducao(fabrica: &PeerConnectionFactory, guid: &str) -> bool {
-    fabrica.set_playout_device_by_guid(guid)
+    if !guid.starts_with(CHAVE_POR_NOME) {
+        return !guid.is_empty() && fabrica.set_playout_device_by_guid(guid);
+    }
+    let (_, saidas) = lista_dispositivos(fabrica);
+    indice_da_chave(&saidas, guid).is_some_and(|i| troca_reproducao(fabrica, i))
 }
 
 #[cfg(test)]
@@ -142,5 +205,94 @@ mod tests {
         assert_eq!(recuperado.entrada_nome.as_deref(), Some("Microfone USB"));
         assert_eq!(recuperado.saida_guid.as_deref(), Some("fone-guid-2"));
         assert_eq!(recuperado.saida_nome.as_deref(), Some("Fone de Ouvido"));
+    }
+
+    #[test]
+    fn chave_sem_guid_usa_o_nome() {
+        // Linux: o libwebrtc devolve GUID vazio para todos os dispositivos.
+        assert_eq!(
+            chave_do_dispositivo("MicFix-Headset", ""),
+            "nome:MicFix-Headset"
+        );
+        assert_ne!(
+            chave_do_dispositivo("MicFix-Headset", ""),
+            chave_do_dispositivo("Áudio interno Estéreo analógico", "")
+        );
+        // O "default" carrega o nome do padrão atual, que muda.
+        assert_eq!(
+            chave_do_dispositivo("default: Áudio interno Estéreo analógico", ""),
+            "nome:default"
+        );
+        // Com GUID de verdade (Windows/macOS), ele é a chave.
+        assert_eq!(chave_do_dispositivo("Mic", "{abc}"), "{abc}");
+        let lista = vec![
+            DispositivoAudio {
+                indice: 0,
+                nome: "default: X".into(),
+                guid: chave_do_dispositivo("default: X", ""),
+            },
+            DispositivoAudio {
+                indice: 1,
+                nome: "MicFix-Headset".into(),
+                guid: chave_do_dispositivo("MicFix-Headset", ""),
+            },
+        ];
+        assert_eq!(indice_da_chave(&lista, "nome:MicFix-Headset"), Some(1));
+        assert_eq!(indice_da_chave(&lista, "nome:sumiu"), None);
+    }
+
+    /// Diagnóstico com o áudio de verdade da máquina (não roda no CI):
+    /// `cargo test -p lincast-chat enumera_real -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn enumera_real() {
+        let mostra = |rotulo: &str, (e, s): &(Vec<DispositivoAudio>, Vec<DispositivoAudio>)| {
+            println!("{rotulo}: {} entradas, {} saídas", e.len(), s.len());
+            for d in e.iter().chain(s) {
+                println!("   [{}] {:?} guid={:?}", d.indice, d.nome, d.guid);
+            }
+        };
+        for i in 0..3 {
+            mostra(&format!("avulso #{i}"), &lista_dispositivos_avulso());
+        }
+        // Como na chamada: uma fábrica com o ADM aberto enquanto outra enumera.
+        let chamada = PeerConnectionFactory::default();
+        println!("ADM da chamada: {}", chamada.acquire_platform_adm());
+        mostra("na chamada", &lista_dispositivos(&chamada));
+        for i in 0..3 {
+            mostra(
+                &format!("avulso com chamada #{i}"),
+                &lista_dispositivos_avulso(),
+            );
+        }
+        mostra("na chamada, depois", &lista_dispositivos(&chamada));
+        chamada.release_platform_adm();
+    }
+
+    /// Troca de microfone com a gravação rodando, como no meio da chamada:
+    /// `cargo test -p lincast-chat troca_mic_real -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn troca_mic_real() {
+        let f = PeerConnectionFactory::default();
+        assert!(f.acquire_platform_adm());
+        let (entradas, _) = lista_dispositivos(&f);
+        println!("init={} start={}", f.init_recording(), f.start_recording());
+        println!("gravando: {}", f.recording_is_initialized());
+        for d in &entradas {
+            println!(
+                "set_recording_device({}) direto: {}",
+                d.indice,
+                f.set_recording_device(d.indice)
+            );
+            println!(
+                "aplica {:?}: {} (gravando depois: {})",
+                d.guid,
+                aplica_dispositivo_gravacao(&f, &d.guid),
+                f.recording_is_initialized()
+            );
+        }
+        f.stop_recording();
+        f.release_platform_adm();
     }
 }

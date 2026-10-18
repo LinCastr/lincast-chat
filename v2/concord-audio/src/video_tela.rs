@@ -30,7 +30,7 @@ struct Dados {
 
 /// Troca R e B de cada pixel (RGBx/RGBA → BGRA).
 fn troca_r_b(px: &mut [u8]) {
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         p.swap(0, 2);
     }
 }

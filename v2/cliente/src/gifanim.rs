@@ -158,6 +158,17 @@ pub fn quadro_atual(url: &str) -> Option<Handle> {
     Some(a.quadro_em(agora_ms()).clone())
 }
 
+/// O primeiro quadro já decodificado (mesmo tamanho dos que andam), para o GIF
+/// parado não pular de tamanho quando começa a andar.
+pub fn quadro_parado(url: &str) -> Option<Handle> {
+    ANIMS.read().ok()?.get(url).map(|a| a.quadros[0].clone())
+}
+
+/// Chave do GIF de uma mensagem do chat (o cache é o mesmo dos avatares).
+pub fn chave_mensagem(id: &str) -> String {
+    format!("msg:{id}")
+}
+
 /// Algum GIF foi desenhado em movimento há pouco? (liga o relógio de redesenho)
 pub fn animando() -> bool {
     agora_ms().saturating_sub(ULTIMO_USO.load(Ordering::Relaxed)) < 400

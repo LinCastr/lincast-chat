@@ -26,6 +26,25 @@ pub fn com_hover<'a>(id: &str, conteudo: impl Into<Element<'a, Msg>>) -> Element
         .into()
 }
 
+/// Linha do chat que não é mensagem de texto (aviso de chamada, cartão de app)
+/// com o mesmo destaque de hover das mensagens, sem a barra de ações.
+pub fn linha_com_hover<'a>(id: &str, conteudo: Element<'a, Msg>) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let t = anim::t(id);
+    com_hover(
+        id,
+        container(conteudo)
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: (t > 0.01).then_some(Background::Color(Color {
+                    a: 0.05 * t,
+                    ..c.texto
+                })),
+                ..Default::default()
+            }),
+    )
+}
+
 /// Botão de ícone da barra de controles, com efeito de hover.
 pub fn botao_icone_anim<'a>(
     id: &'static str,

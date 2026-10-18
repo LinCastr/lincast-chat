@@ -10,8 +10,6 @@
 //! binário não linka o libwebrtc, então aqui `pw_*` é a biblioteca de verdade.
 //! Bônus: se a captura de áudio cair, a chamada continua de pé.
 
-#![allow(clippy::chunks_exact_to_as_chunks)]
-
 mod audio_apps;
 mod video_tela;
 
@@ -127,8 +125,8 @@ fn captura(filtro: audio_apps::Filtro, excluir_pid: Option<u32>) -> Result<()> {
             std::thread::sleep(espera);
         }
         pico_max = pico_max.max(mixer.puxa_10ms(&mut bloco));
-        for (b, s) in bytes.chunks_exact_mut(2).zip(bloco) {
-            b.copy_from_slice(&s.to_le_bytes());
+        for (b, s) in bytes.as_chunks_mut::<2>().0.iter_mut().zip(bloco) {
+            *b = s.to_le_bytes();
         }
         if saida.write_all(&bytes).and_then(|_| saida.flush()).is_err() {
             // O app principal fechou: acabou.

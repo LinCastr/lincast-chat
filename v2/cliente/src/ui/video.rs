@@ -9,6 +9,22 @@ use iced::{Alignment, Element, Length};
 
 use crate::{Msg, Pessoa, Video, fraco, icones, negrito, tema, ui};
 
+/// O quadro atual sobre o anterior. O iced sobe imagem grande para a GPU em
+/// segundo plano e, no primeiro desenho dela, não mostra nada: o anterior (já na
+/// GPU) cobre esse buraco, senão o vídeo pisca a cada quadro novo.
+fn quadro_de_video<'a>(v: &Video, largura: Length, altura: Length) -> Element<'a, Msg> {
+    let camada = |h: &image::Handle| {
+        image(h.clone())
+            .width(largura)
+            .height(altura)
+            .content_fit(iced::ContentFit::Contain)
+    };
+    match &v.anterior {
+        Some(anterior) => stack![camada(anterior), camada(&v.imagem)].into(),
+        None => camada(&v.imagem).into(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModoVideo {
     #[default]
@@ -149,13 +165,8 @@ pub(crate) fn renderiza_caixa_video<'a>(
 
     let assistindo = esta_assistindo(v, meu_id, est);
     let conteudo: Element<'a, Msg> = if assistindo {
-        let img = mouse_area(
-            image(v.imagem.clone())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .content_fit(iced::ContentFit::Contain),
-        )
-        .on_press(Msg::AlternaFixacaoVideo(v.dono.clone(), v.de_tela));
+        let img = mouse_area(quadro_de_video(v, Length::Fill, Length::Fill))
+            .on_press(Msg::AlternaFixacaoVideo(v.dono.clone(), v.de_tela));
         let pode_tela_cheia = !(v.de_tela && v.dono == meu_id);
         let tela_cheia = container(crate::ui::efeitos::com_dica(
             crate::botao_icone(
@@ -237,11 +248,7 @@ pub(crate) fn renderiza_miniatura<'a>(
         .unwrap_or(false);
 
     let miolo: Element<'a, Msg> = if esta_assistindo(v, meu_id, est) {
-        image(v.imagem.clone())
-            .width(160)
-            .height(90)
-            .content_fit(iced::ContentFit::Contain)
-            .into()
+        quadro_de_video(v, Length::Fixed(160.0), Length::Fixed(90.0))
     } else {
         container(text("Transmissão").size(12).style(fraco))
             .width(160)
@@ -318,15 +325,10 @@ fn renderiza_tela_cheia<'a>(
     .spacing(8)
     .align_y(Alignment::Center);
 
-    let img_grande = container(
-        image(v.imagem.clone())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .content_fit(iced::ContentFit::Contain),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(tema::moldura_video);
+    let img_grande = container(quadro_de_video(v, Length::Fill, Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(tema::moldura_video);
 
     let quadro = container(img_grande)
         .width(Length::Fill)
@@ -378,6 +380,7 @@ mod tests {
             largura: 1280,
             altura: 720,
             imagem: image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
+            anterior: None,
         }
     }
 

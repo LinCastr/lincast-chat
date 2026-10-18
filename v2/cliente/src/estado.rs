@@ -313,6 +313,10 @@ pub(crate) struct Video {
     pub(crate) largura: u32,
     pub(crate) altura: u32,
     pub(crate) imagem: image::Handle,
+    /// Quadro anterior, desenhado por baixo do atual: o iced sobe imagem
+    /// grande (> 2 MB, ex. 1080p) para a GPU em segundo plano e não desenha
+    /// nada até terminar; sem isto a transmissão pisca a cada quadro.
+    pub(crate) anterior: Option<image::Handle>,
 }
 
 #[derive(Debug, Clone)]

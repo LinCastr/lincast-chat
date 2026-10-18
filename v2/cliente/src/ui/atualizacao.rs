@@ -201,10 +201,10 @@ pub fn instala(info: &InfoAtualizacao) -> Result<String, String> {
     // Aberto por wrapper (`ld.so app`), o executável em uso é o carregador do
     // sistema, não o app: trocá-lo quebraria a instalação. Só se atualiza
     // sozinho o que está instalado com o nome do próprio app.
-    if !exe
+    if exe
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n == "lincast-chat")
+        .is_none_or(|n| n != "lincast-chat")
     {
         return Err(
             "este app foi aberto por um script; atualize rodando o instalador de novo".into(),

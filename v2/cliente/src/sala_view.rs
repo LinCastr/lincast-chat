@@ -523,12 +523,15 @@ impl SalaAberta {
                 if tipo == "perdida" {
                     continue;
                 }
-                mensagens = mensagens.push(ui::conversa::linha_de_sistema(
-                    tipo,
-                    &m.texto,
-                    m.ts,
-                    &m.extra,
-                    self.meu_uid.as_deref(),
+                mensagens = mensagens.push(ui::efeitos::linha_com_hover(
+                    &format!("msg-{}", m.id),
+                    ui::conversa::linha_de_sistema(
+                        tipo,
+                        &m.texto,
+                        m.ts,
+                        &m.extra,
+                        self.meu_uid.as_deref(),
+                    ),
                 ));
                 // Mensagem de sistema quebra a sequência de uma mesma pessoa.
                 anterior = Some(("", m.ts));
@@ -735,15 +738,19 @@ impl SalaAberta {
         foto: Option<&'a str>,
     ) -> Element<'a, Msg> {
         if m.extra.app.as_deref() == Some("wordle") {
-            return container(ui::wordle::mensagem_app(
-                m,
-                m.extra
-                    .wordle_dia
-                    .as_deref()
-                    .and_then(|d| self.wordle_grupo.get(d)),
-            ))
-            .padding([0, 4])
-            .into();
+            return ui::efeitos::linha_com_hover(
+                &format!("msg-{}", m.id),
+                container(ui::wordle::mensagem_app(
+                    m,
+                    m.extra
+                        .wordle_dia
+                        .as_deref()
+                        .and_then(|d| self.wordle_grupo.get(d)),
+                ))
+                .padding([0, 4])
+                .width(Length::Fill)
+                .into(),
+            );
         }
         let eh_minha = ui::chat::eh_minha_mensagem(m, &self.entrada.nome, self.meu_uid.as_deref());
         let mut corpo = Column::new().spacing(4);
@@ -815,10 +822,19 @@ impl SalaAberta {
             corpo = corpo.push(card_de_arquivo(a));
         }
         if let Some(h) = self.imagens.get(&m.id) {
-            let img_elem = image(h.clone())
+            // GIF: o quadro do momento (ou o primeiro, parado, no modo "só com
+            // o mouse em cima"); imagem comum: ela mesma.
+            let chave_gif = crate::gifanim::chave_mensagem(&m.id);
+            let quadro = crate::gifanim::quadro_atual(&chave_gif)
+                .or_else(|| crate::gifanim::quadro_parado(&chave_gif))
+                .unwrap_or_else(|| h.clone());
+            let img_elem = image(quadro)
                 .width(Length::Shrink)
                 .height(Length::Shrink)
                 .content_fit(iced::ContentFit::ScaleDown);
+            let img_elem = iced::widget::mouse_area(img_elem)
+                .on_enter(Msg::HoverGif(Some(chave_gif)))
+                .on_exit(Msg::HoverGif(None));
             if let Some(url) = &m.gif {
                 corpo = corpo.push(
                     button(img_elem)
@@ -827,10 +843,7 @@ impl SalaAberta {
                         .on_press(Msg::AbreLink(url.clone())),
                 );
             } else {
-                corpo = corpo.push(
-                    iced::widget::mouse_area(img_elem)
-                        .on_right_press(Msg::AbreMenuImagem(m.id.clone())),
-                );
+                corpo = corpo.push(img_elem.on_right_press(Msg::AbreMenuImagem(m.id.clone())));
             }
         } else if let Some(g) = &m.gif {
             corpo = corpo.push(ui::chat::gif_carregando(g));
