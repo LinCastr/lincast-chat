@@ -162,7 +162,7 @@ function parseCookies(req) {
 // mensagem da outra.
 //
 // O `uid` sai da sessão, nunca do cliente (é o mesmo cuidado do nome: ver a
-// identity rule: the account, never client-sent text; this has leaked once). Quem
+// seção de identidade no CLAUDE.md, onde isso já teve furo uma vez). Quem
 // conecta sem sessão fica com `uid` nulo e cai na comparação por nome, igual a
 // hoje — é o que mantém as duas suítes rodando contra um servidor de verdade.
 //
@@ -1067,84 +1067,9 @@ const server = http.createServer(async (req, res) => {
   poeCabecalhosDeSeguranca(res);
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (url.pathname === '/auth/discord') {
-    if (!DISCORD_CLIENT_ID) {
-      res.writeHead(500);
-      res.end('Login com Discord não configurado no servidor.');
-      return;
-    }
-    const authUrl = new URL('https://discord.com/oauth2/authorize');
-    authUrl.searchParams.set('client_id', DISCORD_CLIENT_ID);
-    authUrl.searchParams.set('redirect_uri', DISCORD_REDIRECT_URI);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'identify');
-    // loginId (app Electron abrindo no navegador do sistema) viaja no "state"
-    // do OAuth — o Discord devolve esse valor intacto no callback.
-    const loginId = url.searchParams.get('loginId');
-    if (loginId) authUrl.searchParams.set('state', loginId);
-    res.writeHead(302, { Location: authUrl.toString() });
-    res.end();
-    return;
-  }
-
-  if (url.pathname === '/auth/discord/callback') {
-    const code = url.searchParams.get('code');
-    const loginId = url.searchParams.get('state') || null;
-    if (!code) { res.writeHead(400); res.end('Código ausente.'); return; }
-    try {
-      const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: DISCORD_CLIENT_ID,
-          client_secret: DISCORD_CLIENT_SECRET,
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: DISCORD_REDIRECT_URI
-        })
-      });
-      if (!tokenRes.ok) throw new Error('token exchange falhou: ' + tokenRes.status);
-      const tokenData = await tokenRes.json();
-
-      const userRes = await fetch('https://discord.com/api/users/@me', {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` }
-      });
-      if (!userRes.ok) throw new Error('busca de usuário falhou: ' + userRes.status);
-      const user = await userRes.json();
-
-      const sessionToken = crypto.randomBytes(24).toString('hex');
-      sessions.set(sessionToken, {
-        tipo: 'discord',
-        id: user.id,
-        name: user.global_name || user.username,
-        avatar: discordAvatarUrl(user),
-        criadaEm: Date.now()
-      });
-      saveSessions();
-
-      // Veio do app Electron (abriu essa página no navegador do sistema) —
-      // deixa o código pronto pro app buscar via polling, e só mostra uma
-      // confirmação aqui em vez de redirecionar (essa aba não é o app).
-      if (loginId) {
-        pendingLogins.set(loginId, { sessionToken, createdAt: Date.now() });
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Concord Premium</title>
-<style>body{background:#14161b;color:#eee;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;}</style>
-</head><body><div><h2>Login confirmado ✅</h2><p>Pode fechar essa aba e voltar pro Concord Premium.</p></div></body></html>`);
-        return;
-      }
-
-      res.writeHead(302, {
-        Location: '/',
-        // 30 dias — sem "lembrar de mim" chato, e refaz login sozinho se expirar
-        'Set-Cookie': `session=${sessionToken}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`
-      });
-      res.end();
-    } catch (e) {
-      console.error('Erro no login com Discord:', e);
-      res.writeHead(500);
-      res.end('Falha no login com Discord.');
-    }
+  if (url.pathname === '/auth/discord' || url.pathname === '/auth/discord/callback') {
+    res.writeHead(410, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Login com Discord foi desativado.');
     return;
   }
 
@@ -1655,14 +1580,76 @@ const server = http.createServer(async (req, res) => {
     // --- Wordle ---------------------------------------------------------------
     if (url.pathname === '/api/wordle' && req.method === 'GET') {
       if (!wordleRespostas.length) { responde(res, 503, { erro: 'Wordle indisponível neste servidor.' }); return; }
-      responde(res, 200, wordleEstadoDe(meuUid, wordleDia()));
+      const dia = url.searchParams.get('dia') || wordleChaveAtual();
+      if (!wordleChaveValida(dia)) { responde(res, 400, { erro: 'Rodada do Wordle inválida.' }); return; }
+      responde(res, 200, wordleEstadoDe(meuUid, dia));
+      return;
+    }
+    if (url.pathname === '/api/wordle/dev/trocar' && req.method === 'POST') {
+      const conta = contas.get(session.usuario) || contaPorUid(meuUid);
+      // Só o login (único); o nome de exibição qualquer um pode trocar para "val47".
+      const usuario = (session.usuario || conta?.usuario || '').toLowerCase();
+      if (usuario !== 'val47') {
+        responde(res, 403, { erro: 'Apenas o desenvolvedor pode alterar a palavra do Wordle.' });
+        return;
+      }
+      if (!wordleRespostas.length) {
+        responde(res, 503, { erro: 'Wordle indisponível neste servidor.' });
+        return;
+      }
+      const corpo = await leJsonDoCorpo(req);
+      const diaBase = wordleDia();
+      const chaveAtual = wordleChaveAtual();
+      const respostaAtual = wordlePalavraDoDia(chaveAtual);
+      let nova = respostaAtual;
+      if (wordleRespostas.length > 1) {
+        for (let i = 0; i < 50; i++) {
+          const idx = Math.floor(Math.random() * wordleRespostas.length);
+          if (wordleRespostas[idx] !== respostaAtual) {
+            nova = wordleRespostas[idx];
+            break;
+          }
+        }
+      }
+      wordleDados.rodadas = wordleDados.rodadas || {};
+      const novaRodada = ((wordleDados.rodadas[diaBase] || 1) + 1);
+      wordleDados.rodadas[diaBase] = novaRodada;
+      const novaChave = `${diaBase}_r${novaRodada}`;
+      (wordleDados.overrides = wordleDados.overrides || {})[novaChave] = nova;
+      wordleDados.dias[novaChave] = {};
+      saveWordle();
+
+      // Envia uma nova mensagem do Wordle no chat do grupo
+      if (corpo && typeof corpo.conversa === 'string') {
+        const c = conversaPorId(corpo.conversa);
+        if (c && c.tipo === 'grupo') {
+          const ts = Date.now();
+          const entrada = {
+            id: crypto.randomBytes(6).toString('hex'),
+            uid: 'app:wordle',
+            name: 'Wordle',
+            app: 'wordle',
+            wordle: { dia: novaChave, numero: wordleNumero(diaBase), rodada: novaRodada },
+            iniciadoPor: session.name,
+            ts
+          };
+          appendMessage(c.id, entrada);
+          const pub = JSON.stringify({ type: 'chat', id: entrada.id, uid: entrada.uid, name: 'Wordle', app: 'wordle', wordle: entrada.wordle, ts });
+          const sala = rooms.get(c.id);
+          if (sala) for (const [, peer] of sala) safeSend(peer.ws, pub);
+          avisaUids(c.membros, { type: 'mensagem', conversa: c.id, autor: 'Wordle', previa: `Nova palavra do Wordle disponível!`, ts });
+        }
+      }
+      // Não devolve a palavra para não revelar o segredo
+      responde(res, 200, { ok: true, dia: novaChave, rodada: novaRodada });
       return;
     }
     if (url.pathname === '/api/wordle/tentar' && req.method === 'POST') {
       if (!wordleRespostas.length) { responde(res, 503, { erro: 'Wordle indisponível neste servidor.' }); return; }
       const corpo = await leJsonDoCorpo(req);
       const palavra = typeof corpo?.palavra === 'string' ? corpo.palavra.trim().toLowerCase() : '';
-      const dia = wordleDia();
+      const dia = (corpo && typeof corpo.dia === 'string' && corpo.dia) || wordleChaveAtual();
+      if (!wordleChaveValida(dia)) { responde(res, 400, { codigo: 'rodada', erro: 'Rodada do Wordle inválida.' }); return; }
       const dias = wordleDados.dias;
       const reg = ((dias[dia] = dias[dia] || {})[meuUid] = dias[dia][meuUid] || { tentativas: [], fim: null });
       if (reg.fim) { responde(res, 409, { codigo: 'fim', erro: 'Você já terminou o de hoje.', ...wordleEstadoDe(meuUid, dia) }); return; }
@@ -1674,18 +1661,28 @@ const server = http.createServer(async (req, res) => {
       else if (reg.tentativas.length >= WORDLE_TENTATIVAS) reg.fim = 'perdeu';
       saveWordle();
       responde(res, 200, wordleEstadoDe(meuUid, dia));
+      // Quem está com um grupo da pessoa aberto recarrega a grade da mensagem
+      // (só o dia vai junto; as cores vêm pelo GET, que confere o membro).
+      const avisoGrade = JSON.stringify({ type: 'wordle-grupo', dia });
+      for (const c of conversasDe(meuUid)) {
+        if (c.tipo !== 'grupo') continue;
+        const sala = rooms.get(c.id);
+        if (sala) for (const [, peer] of sala) safeSend(peer.ws, avisoGrade);
+      }
       return;
     }
     const mw = url.pathname.match(/^\/api\/conversas\/([^/]+)\/wordle$/);
     if (mw) {
       const c = conversaPorId(decodeURIComponent(mw[1]));
       if (!c || !ehMembro(c, meuUid)) { responde(res, 404, { erro: 'Conversa não encontrada.' }); return; }
+      if (c.tipo !== 'grupo') { responde(res, 400, { erro: 'O Wordle só está disponível em grupos.' }); return; }
       if (!wordleRespostas.length) { responde(res, 503, { erro: 'Wordle indisponível neste servidor.' }); return; }
-      const dia = wordleDia();
+      const dia = url.searchParams.get('dia') || wordleChaveAtual();
+      if (!wordleChaveValida(dia)) { responde(res, 400, { erro: 'Rodada do Wordle inválida.' }); return; }
       if (req.method === 'GET') { responde(res, 200, wordleDoGrupo(c, dia)); return; }
       if (req.method === 'POST') {
-        // Uma mensagem de "app" por conversa e por dia (o /wordle repetido reaproveita).
-        const jaTem = readRoomEntries(c.id).slice(-200).find(e => e.app === 'wordle' && e.wordle && e.wordle.dia === dia);
+        // Uma mensagem de "app" por conversa e por rodada/dia.
+        const jaTem = readRoomEntries(c.id).slice(-200).find(e => e.app === 'wordle' && e.wordle && String(e.wordle.dia) === String(dia));
         if (jaTem) { responde(res, 200, { ok: true, id: entryId(jaTem), existia: true }); return; }
         const ts = Date.now();
         const entrada = { id: crypto.randomBytes(6).toString('hex'), uid: 'app:wordle', name: 'Wordle', app: 'wordle',
@@ -2026,6 +2023,44 @@ const server = http.createServer(async (req, res) => {
     }
 
     responde(res, 404, { erro: 'rota' });
+    return;
+  }
+
+  // --- Relatório de problemas (log do app, enviado ao fechar) -----------------
+  // Texto puro, até 1MB, só com sessão. Fica em ./diagnosticos/, um arquivo por
+  // envio, fora de chatdata/. Guarda os 20 mais novos de cada pessoa.
+  if (url.pathname === '/api/relatorio' && req.method === 'POST') {
+    const cookies = parseCookies(req);
+    const session = cookies.session && sessions.get(cookies.session);
+    if (!session) { responde(res, 401, { erro: 'Entre na sua conta primeiro.' }); return; }
+    const uid = uidDaSessao(session) || 'anon';
+    const partes = []; let total = 0; let estourou = false;
+    await new Promise(resolve => {
+      req.on('data', p => {
+        total += p.length;
+        if (total > 1024 * 1024) { estourou = true; req.destroy(); resolve(); return; }
+        partes.push(p);
+      });
+      req.on('end', resolve);
+      req.on('error', resolve);
+    });
+    if (estourou) { responde(res, 413, { erro: 'Relatório grande demais.' }); return; }
+    try {
+      const dir = path.join(__dirname, 'diagnosticos');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const quem = uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+      const versao = String(req.headers['x-lincast-versao'] || '?').replace(/[^0-9a-zA-Z._-]/g, '').slice(0, 20);
+      const nome = `${quem}-${new Date().toISOString().replace(/[:.]/g, '-')}-v${versao}.log`;
+      fs.writeFileSync(path.join(dir, nome), Buffer.concat(partes), { mode: 0o600 });
+      const meus = fs.readdirSync(dir).filter(f => f.startsWith(quem + '-')).sort();
+      for (const velho of meus.slice(0, Math.max(0, meus.length - 20))) {
+        try { fs.unlinkSync(path.join(dir, velho)); } catch {}
+      }
+      responde(res, 200, { ok: true });
+    } catch (e) {
+      console.error('Relatório não salvo:', e.message);
+      responde(res, 500, { erro: 'Não consegui guardar o relatório.' });
+    }
     return;
   }
 
@@ -3670,11 +3705,38 @@ function wordleDia() {
   return Math.floor((Date.now() - 3 * 3600 * 1000) / 86400000);
 }
 const WORDLE_DIA_ZERO = Math.floor(Date.UTC(2026, 0, 1) / 86400000);   // Wordle No. 1 = 2026-01-01
-const wordleNumero = dia => dia - WORDLE_DIA_ZERO + 1;
+const wordleNumero = dia => (Number(String(dia).split('_')[0]) || wordleDia()) - WORDLE_DIA_ZERO + 1;
+function wordleChaveAtual() {
+  const base = wordleDia();
+  const rodada = (wordleDados.rodadas && wordleDados.rodadas[base]) || 1;
+  return rodada > 1 ? `${base}_r${rodada}` : String(base);
+}
+// Número do dia de uma chave de rodada ("20743" ou "20743_r2").
+const wordleBase = dia => Number(String(dia).split('_')[0]);
+// Só vale dia que já chegou e rodada que existe: com chave inventada dava para
+// jogar um dia futuro e ver a resposta dele ao perder.
+function wordleChaveValida(dia) {
+  const m = /^(\d+)(?:_r(\d+))?$/.exec(String(dia || ''));
+  if (!m || Number(m[1]) > wordleDia()) return false;
+  if (!m[2]) return true;
+  const n = Number(m[2]);
+  return n >= 2 && n <= ((wordleDados.rodadas && wordleDados.rodadas[Number(m[1])]) || 1);
+}
+// Chaves de todas as rodadas de um dia.
+function wordleChavesDoDia(base) {
+  const n = (wordleDados.rodadas && wordleDados.rodadas[base]) || 1;
+  const k = [String(base)];
+  for (let r = 2; r <= n; r++) k.push(`${base}_r${r}`);
+  return k;
+}
 function wordlePalavraDoDia(dia) {
-  if (process.env.WORDLE_PALAVRA && dia === wordleDia()) return process.env.WORDLE_PALAVRA;   // só teste
+  // A palavra sorteada de cada rodada fica gravada no `.wordle`: só em memória,
+  // um restart trocava a resposta de quem já estava jogando.
+  if (wordleDados.overrides && wordleDados.overrides[dia]) return wordleDados.overrides[dia];
+  const num = Number(String(dia).split('_')[0]) || wordleDia();
+  if (process.env.WORDLE_PALAVRA && num === wordleDia()) return process.env.WORDLE_PALAVRA;   // só teste
   if (!wordleRespostas.length) return null;
-  return wordleRespostas[((dia % wordleRespostas.length) + wordleRespostas.length) % wordleRespostas.length];
+  return wordleRespostas[((num % wordleRespostas.length) + wordleRespostas.length) % wordleRespostas.length];
 }
 
 // 'g' certa, 'y' existe em outro lugar, 'x' não tem. Letra repetida na
@@ -3708,7 +3770,9 @@ function saveWordle() {
   try {
     // Guarda ~400 dias: o suficiente para a sequência ("streak") do grupo.
     const corte = wordleDia() - 400;
-    for (const d of Object.keys(wordleDados.dias)) if (Number(d) < corte) delete wordleDados.dias[d];
+    for (const d of Object.keys(wordleDados.dias)) if (wordleBase(d) < corte) delete wordleDados.dias[d];
+    for (const d of Object.keys(wordleDados.overrides || {})) if (wordleBase(d) < corte) delete wordleDados.overrides[d];
+    for (const d of Object.keys(wordleDados.rodadas || {})) if (Number(d) < corte) delete wordleDados.rodadas[d];
     escreveArquivoAtomico(WORDLE_FILE, encryptBuf(Buffer.from(JSON.stringify(wordleDados), 'utf8')), { mode: 0o600 });
   } catch (e) {
     console.error('Não consegui salvar o Wordle:', e.message);
@@ -3741,15 +3805,18 @@ function wordleDoGrupo(conversa, dia) {
       cores: reg.tentativas.map(p => wordleCores(p, resposta))
     });
   }
-  const acertouNoDia = d => conversa.membros.some(u => ((wordleDados.dias[d] || {})[u] || {}).fim === 'ganhou');
+  // A sequência conta dias (qualquer rodada do dia vale), não rodadas.
+  const base = wordleBase(dia);
+  const acertouNoDia = d => wordleChavesDoDia(d).some(k =>
+    conversa.membros.some(u => ((wordleDados.dias[k] || {})[u] || {}).fim === 'ganhou'));
   let streak = 0;
-  for (let d = dia - 1; streak < 400 && acertouNoDia(d); d--) streak++;
-  if (acertouNoDia(dia)) streak++;
+  for (let d = base - 1; streak < 400 && acertouNoDia(d); d--) streak++;
+  if (acertouNoDia(base)) streak++;
   // Resultados de ontem (para a mensagem "Your group is on a N day streak").
-  const ontemResp = wordlePalavraDoDia(dia - 1);
+  const ontemResp = wordlePalavraDoDia(String(base - 1));
   const ontem = [];
   for (const uid of conversa.membros) {
-    const reg = (wordleDados.dias[dia - 1] || {})[uid];
+    const reg = (wordleDados.dias[base - 1] || {})[uid];
     if (!reg || !reg.fim) continue;
     const conta = contaPorUid(uid);
     ontem.push({ uid, name: conta ? conta.nome : 'Alguém', avatar: conta ? avatarUrlDaConta(conta) : null,

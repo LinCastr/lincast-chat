@@ -75,11 +75,10 @@ if [[ "${DO_UNINSTALL}" -eq 1 ]]; then
     exit 0
 fi
 
-# Verifica se os binários existem; se não, compila
-if [[ ! -f "${BIN_CLIENT}" || ! -f "${BIN_AUDIO}" ]]; then
-    echo "==> Binários de release não encontrados. Compilando com cargo..."
-    cargo build --release --manifest-path "${ROOT_DIR}/v2/Cargo.toml"
-fi
+# Compila sempre: o cargo só refaz o que mudou. Antes só compilava quando o
+# binário não existia, e instalava em silêncio uma versão velha.
+echo "==> Compilando a versão de release..."
+cargo build --release --manifest-path "${ROOT_DIR}/v2/Cargo.toml"
 
 echo "==> Instalando Lincast Chat em ${PREFIX}..."
 install -d -m 755 "${BINDIR}" "${APPDIR}" "${ICONDIR}"

@@ -53,8 +53,36 @@ pub fn salva_config(config: &PttConfig) {
 }
 
 /// Converte uma tecla do iced em um identificador estável e um rótulo legível em português.
-pub fn descreve_tecla(key: &iced::keyboard::Key) -> Option<(String, String)> {
-    use iced::keyboard::key::Named;
+pub fn descreve_tecla_completa(
+    key: &iced::keyboard::Key,
+    physical: Option<&iced::keyboard::key::Physical>,
+) -> Option<(String, String)> {
+    use iced::keyboard::key::{Code, Named, Physical};
+    if let Some(Physical::Code(code)) = physical {
+        match code {
+            Code::NumLock => return Some(("NumLock".to_string(), "Num Lock".to_string())),
+            Code::ScrollLock => {
+                return Some(("ScrollLock".to_string(), "Scroll Lock".to_string()));
+            }
+            Code::Numpad0 => return Some(("Numpad0".to_string(), "Numpad 0".to_string())),
+            Code::Numpad1 => return Some(("Numpad1".to_string(), "Numpad 1".to_string())),
+            Code::Numpad2 => return Some(("Numpad2".to_string(), "Numpad 2".to_string())),
+            Code::Numpad3 => return Some(("Numpad3".to_string(), "Numpad 3".to_string())),
+            Code::Numpad4 => return Some(("Numpad4".to_string(), "Numpad 4".to_string())),
+            Code::Numpad5 => return Some(("Numpad5".to_string(), "Numpad 5".to_string())),
+            Code::Numpad6 => return Some(("Numpad6".to_string(), "Numpad 6".to_string())),
+            Code::Numpad7 => return Some(("Numpad7".to_string(), "Numpad 7".to_string())),
+            Code::Numpad8 => return Some(("Numpad8".to_string(), "Numpad 8".to_string())),
+            Code::Numpad9 => return Some(("Numpad9".to_string(), "Numpad 9".to_string())),
+            Code::NumpadDecimal => {
+                return Some(("NumpadDecimal".to_string(), "Numpad .".to_string()));
+            }
+            Code::NumpadEnter => {
+                return Some(("NumpadEnter".to_string(), "Numpad Enter".to_string()));
+            }
+            _ => {}
+        }
+    }
     match key {
         iced::keyboard::Key::Named(named) => {
             let (id, rotulo) = match named {
@@ -84,6 +112,8 @@ pub fn descreve_tecla(key: &iced::keyboard::Key) -> Option<(String, String)> {
                 Named::F10 => ("F10", "F10"),
                 Named::F11 => ("F11", "F11"),
                 Named::F12 => ("F12", "F12"),
+                Named::NumLock | Named::Clear => ("NumLock", "Num Lock"),
+                Named::ScrollLock => ("ScrollLock", "Scroll Lock"),
                 _ => return None,
             };
             Some((id.to_string(), rotulo.to_string()))
@@ -101,13 +131,27 @@ pub fn descreve_tecla(key: &iced::keyboard::Key) -> Option<(String, String)> {
     }
 }
 
+#[allow(dead_code)]
+pub fn descreve_tecla(key: &iced::keyboard::Key) -> Option<(String, String)> {
+    descreve_tecla_completa(key, None)
+}
+
 /// Verifica se a tecla pressionada bate com o identificador configurado.
-pub fn corresponde(id_config: &str, key: &iced::keyboard::Key) -> bool {
-    if let Some((id, _)) = descreve_tecla(key) {
+pub fn corresponde_completo(
+    id_config: &str,
+    key: &iced::keyboard::Key,
+    physical: Option<&iced::keyboard::key::Physical>,
+) -> bool {
+    if let Some((id, _)) = descreve_tecla_completa(key, physical) {
         id == id_config
     } else {
         false
     }
+}
+
+#[allow(dead_code)]
+pub fn corresponde(id_config: &str, key: &iced::keyboard::Key) -> bool {
+    corresponde_completo(id_config, key, None)
 }
 
 /// Inicia o listener global no Wayland via portal GlobalShortcuts.
@@ -215,5 +259,11 @@ mod testes {
         assert_eq!(id_char, "Char:T");
         assert_eq!(rotulo_char, "T");
         assert!(corresponde("Char:T", &key_char));
+
+        let key_numlock = iced::keyboard::Key::Named(Named::NumLock);
+        let (id_nl, rotulo_nl) = descreve_tecla(&key_numlock).expect("descreve NumLock");
+        assert_eq!(id_nl, "NumLock");
+        assert_eq!(rotulo_nl, "Num Lock");
+        assert!(corresponde("NumLock", &key_numlock));
     }
 }

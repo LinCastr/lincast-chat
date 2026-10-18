@@ -88,14 +88,27 @@ pub fn esquece_escolha() {
     }
 }
 
+/// Acha o `concord-audio`: ao lado do executável e, se não estiver lá (app
+/// aberto por script/wrapper que o move de lugar), nas pastas do `PATH`.
+pub fn acha_concord_audio() -> Option<std::path::PathBuf> {
+    let ao_lado = std::env::current_exe()
+        .ok()?
+        .with_file_name("concord-audio");
+    if ao_lado.is_file() {
+        return Some(ao_lado);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|p| p.join("concord-audio"))
+        .find(|p| p.is_file())
+}
+
 /// Abre a sessão (mostra o seletor se não houver escolha lembrada), liga o
 /// processo auxiliar e devolve o canal de quadros. Bloqueia até o portal
 /// responder: chame de uma thread própria.
 pub fn abre(cursor: bool, fps: u32) -> Result<Portal> {
-    let bin = std::env::current_exe()?.with_file_name("concord-audio");
-    if !bin.exists() {
+    let Some(bin) = acha_concord_audio() else {
         bail!("não achei o concord-audio ao lado do app");
-    }
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()

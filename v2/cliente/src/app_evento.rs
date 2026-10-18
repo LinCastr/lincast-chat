@@ -47,16 +47,19 @@ impl App {
                 if n > 0 && n <= s.mensagens.len() {
                     s.primeira_nao_lida_id = Some(s.mensagens[s.mensagens.len() - n].id.clone());
                 }
-                let tem_wordle = s.mensagens.iter().any(|m| m.extra.app.is_some());
+                // Um resumo por rodada que aparece no histórico.
+                let mut dias: Vec<String> = s
+                    .mensagens
+                    .iter()
+                    .filter(|m| m.extra.app.as_deref() == Some("wordle"))
+                    .filter_map(|m| m.extra.wordle_dia.clone())
+                    .collect();
+                dias.sort();
+                dias.dedup();
                 let imagens = s.indexa_imagens();
-                return if tem_wordle {
-                    Task::batch([
-                        imagens,
-                        Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo)),
-                    ])
-                } else {
-                    imagens
-                };
+                return Task::batch(std::iter::once(imagens).chain(dias.into_iter().map(|d| {
+                    Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo(Some(d))))
+                })));
             }
             Evento::Chat(m) => {
                 let eh_minha =
@@ -84,20 +87,21 @@ impl App {
                         ui::chat::dispara_notificacao_desktop(&titulo, &corpo, "normal");
                     }
                 }
-                let e_wordle = m.extra.app.is_some();
+                let dia_wordle = (m.extra.app.as_deref() == Some("wordle"))
+                    .then(|| m.extra.wordle_dia.clone())
+                    .flatten();
                 s.mensagens.push(*m);
                 // A v1 guarda as últimas 300; acima disso a tela só pesa.
                 if s.mensagens.len() > 500 {
                     s.mensagens.drain(..100);
                 }
                 let imagens = s.indexa_imagens();
-                return if e_wordle {
-                    Task::batch([
+                return match dia_wordle {
+                    Some(d) => Task::batch([
                         imagens,
-                        Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo)),
-                    ])
-                } else {
-                    imagens
+                        Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo(Some(d)))),
+                    ]),
+                    None => imagens,
                 };
             }
             Evento::MensagemEditada {
@@ -221,14 +225,22 @@ impl App {
                     .saida_guid
                     .or_else(|| saidas.first().map(|d| d.guid.clone()));
                 if let Some(pa) = &mut s.painel_audio {
-                    pa.entradas = entradas;
-                    pa.saidas = saidas;
+                    pa.entradas = entradas.clone();
+                    pa.saidas = saidas.clone();
                     if pa.entrada_selecionada.is_none() {
-                        pa.entrada_selecionada = entrada_sel;
+                        pa.entrada_selecionada = entrada_sel.clone();
                     }
                     if pa.saida_selecionada.is_none() {
-                        pa.saida_selecionada = saida_sel;
+                        pa.saida_selecionada = saida_sel.clone();
                     }
+                }
+                self.painel_audio.entradas = entradas;
+                self.painel_audio.saidas = saidas;
+                if self.painel_audio.entrada_selecionada.is_none() {
+                    self.painel_audio.entrada_selecionada = entrada_sel;
+                }
+                if self.painel_audio.saida_selecionada.is_none() {
+                    self.painel_audio.saida_selecionada = saida_sel;
                 }
             }
             Evento::NivelMic(nivel) => {
@@ -236,6 +248,7 @@ impl App {
                 if let Some(pa) = &mut s.painel_audio {
                     pa.nivel_mic = nivel;
                 }
+                self.painel_audio.nivel_mic = nivel;
             }
             Evento::Falando { id, falando } => {
                 if falando {
@@ -286,6 +299,16 @@ impl App {
                     x_frac,
                     tempo_restante_ms: 2600,
                 });
+            }
+            Evento::WordleGrupoMudou(dia) => {
+                // Só se a rodada aparece nesta conversa.
+                let tem = s.mensagens.iter().any(|m| {
+                    m.extra.app.as_deref() == Some("wordle")
+                        && m.extra.wordle_dia.as_deref() == Some(dia.as_str())
+                });
+                if tem {
+                    return Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo(Some(dia))));
+                }
             }
             Evento::CutucadaRecebida { de_nome } => {
                 s.aviso_cutucada = Some(ui::reacao::AvisoCutucada {
@@ -345,6 +368,185 @@ impl App {
             Evento::RoletaResultado { id, indice, por } => {
                 s.roletas.iniciar_giro(&id, indice, por);
             }
+        }
+        Task::none()
+    }
+
+    pub(crate) fn evento_da_chamada_ativa(&mut self, ev: Evento) -> Task<Msg> {
+        let Some(c) = &mut self.chamada_ativa else {
+            return Task::none();
+        };
+        match ev {
+            Evento::Pronta(tx) => {
+                let ptt_ativo = c.ptt.ativo;
+                c.comandos = Some(tx);
+                c.manda(Comando::PttConfigurado { ativo: ptt_ativo });
+                if let Some(atv) = &self.atividade_atual {
+                    c.manda(Comando::TrocarAtividade(Some(atv.clone())));
+                }
+            }
+            Evento::PttTransmitindo(t) => c.ptt_transmitindo = t,
+            Evento::Entrou { meu_id } => {
+                c.meu_id = meu_id;
+            }
+            Evento::Pessoas(p) => {
+                if let Some(eu) = p.iter().find(|x| x.eu)
+                    && eu.uid.is_some()
+                {
+                    c.meu_uid = eu.uid.clone();
+                }
+                c.pessoas = p;
+            }
+            Evento::MeuEstado {
+                na_chamada,
+                mudo,
+                surdo,
+                apresentando,
+                com_camera,
+                mudo_forcado,
+            } => {
+                c.na_chamada = na_chamada;
+                if na_chamada && c.chamada_desde.is_none() {
+                    c.chamada_desde = Some(std::time::Instant::now());
+                } else if !na_chamada {
+                    c.chamada_desde = None;
+                }
+                c.mudo = mudo;
+                c.surdo = surdo;
+                c.apresentando = apresentando;
+                c.com_camera = com_camera;
+                c.mudo_forcado = mudo_forcado;
+                self.atualiza_bandeja();
+            }
+            Evento::Falando { id, falando } => {
+                if falando {
+                    c.ultimo_falante = Some(id.clone());
+                }
+                if let Some(p) = c.pessoas.iter_mut().find(|p| p.id == id) {
+                    p.falando = falando;
+                }
+            }
+            Evento::DispositivosAudio { entradas, saidas } => {
+                let cfg = dispositivos::carrega_config();
+                let entrada_sel = cfg
+                    .entrada_guid
+                    .or_else(|| entradas.first().map(|d| d.guid.clone()));
+                let saida_sel = cfg
+                    .saida_guid
+                    .or_else(|| saidas.first().map(|d| d.guid.clone()));
+                if let Some(pa) = &mut c.painel_audio {
+                    pa.entradas = entradas.clone();
+                    pa.saidas = saidas.clone();
+                    if pa.entrada_selecionada.is_none() {
+                        pa.entrada_selecionada = entrada_sel.clone();
+                    }
+                    if pa.saida_selecionada.is_none() {
+                        pa.saida_selecionada = saida_sel.clone();
+                    }
+                }
+                self.painel_audio.entradas = entradas;
+                self.painel_audio.saidas = saidas;
+                if self.painel_audio.entrada_selecionada.is_none() {
+                    self.painel_audio.entrada_selecionada = entrada_sel;
+                }
+                if self.painel_audio.saida_selecionada.is_none() {
+                    self.painel_audio.saida_selecionada = saida_sel;
+                }
+            }
+            Evento::NivelMic(nivel) => {
+                c.nivel_mic_atual = nivel;
+                if let Some(pa) = &mut c.painel_audio {
+                    pa.nivel_mic = nivel;
+                }
+                self.painel_audio.nivel_mic = nivel;
+            }
+            Evento::Quadro(q) => {
+                let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
+                match c
+                    .videos
+                    .iter_mut()
+                    .find(|v| v.dono == q.dono && v.de_tela == q.de_tela)
+                {
+                    Some(v) => {
+                        v.imagem = imagem;
+                        v.largura = q.largura;
+                        v.altura = q.altura;
+                    }
+                    None => c.videos.push(Video {
+                        dono: q.dono,
+                        de_tela: q.de_tela,
+                        largura: q.largura,
+                        altura: q.altura,
+                        imagem,
+                    }),
+                }
+            }
+            Evento::VideoFechou { dono, de_tela } => {
+                c.videos
+                    .retain(|v| !(v.dono == dono && v.de_tela == de_tela));
+            }
+            Evento::QualidadeConexao { id, qualidade } => {
+                if let Some(p) = c.pessoas.iter_mut().find(|p| p.id == id) {
+                    p.qualidade = Some(qualidade);
+                }
+            }
+            Evento::Caiu(_) | Evento::Recusada(_) => {
+                self.chamada_ativa = None;
+                self.atualiza_bandeja();
+            }
+            Evento::Chat(m) => {
+                let eh_minha =
+                    ui::chat::eh_minha_mensagem(&m, &c.entrada.nome, c.meu_uid.as_deref());
+                if !eh_minha && m.sussurro {
+                    let (titulo, corpo) = ui::chat::prepara_notificacao_chat(
+                        ui::chat::TipoNotificacaoChat::Sussurro,
+                        &c.entrada.sala,
+                        &m.autor,
+                        &m.texto,
+                        m.imagem.is_some(),
+                        m.gif.is_some(),
+                        m.enquete.is_some(),
+                    );
+                    ui::chat::dispara_notificacao_desktop(&titulo, &corpo, "normal");
+                }
+                c.mensagens.push(*m);
+                if c.mensagens.len() > 500 {
+                    c.mensagens.drain(..100);
+                }
+            }
+            Evento::SomRecebido {
+                de_id,
+                de_nome,
+                id,
+                vol,
+            } if !c.soundboard.esta_silenciado(&de_nome)
+                && !c.soundboard.esta_silenciado(&de_id) =>
+            {
+                som::toca_som(&id, vol);
+            }
+            _ => {}
+        }
+        if let Some(c) = &self.chamada_ativa
+            && !c.na_chamada
+        {
+            self.chamada_ativa = None;
+            self.atualiza_bandeja();
+        }
+        Task::none()
+    }
+
+    pub(crate) fn evento_da_sala_id(&mut self, id: &str, ev: Evento) -> Task<Msg> {
+        if let Tela::Sala(s) = &self.tela
+            && s.entrada.sala == id
+        {
+            return self.evento_da_sala(ev);
+        }
+        if self
+            .chamada_ativa
+            .as_ref()
+            .is_some_and(|c| c.entrada.sala == id)
+        {
+            return self.evento_da_chamada_ativa(ev);
         }
         Task::none()
     }

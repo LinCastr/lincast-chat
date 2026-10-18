@@ -723,25 +723,6 @@ pub fn salva_sessao(token: Option<&str>) {
     }
 }
 
-/// Gera um ID de login criptograficamente imprevisível (128 bits) para o fluxo OAuth.
-pub fn gera_login_id_seguro() -> String {
-    let mut bytes = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut bytes);
-    } else {
-        for b in &mut bytes {
-            *b = fastrand::u8(..);
-        }
-    }
-    let mut s = String::with_capacity(32);
-    for b in bytes {
-        use std::fmt::Write;
-        let _ = write!(s, "{:02x}", b);
-    }
-    s
-}
-
 /// Consulta o cartão de perfil público de um usuário.
 pub fn busca_perfil(srv: &Servidor, token: &str, usuario: &str) -> Result<PerfilCompleto> {
     let url = format!("{}/api/perfil/{}", srv.base, usuario);
@@ -891,6 +872,22 @@ pub fn apaga_conta(srv: &Servidor, token: &str, senha: &str) -> Result<()> {
     }
 }
 
+/// Manda o log da sessão ao servidor (POST /api/relatorio, texto puro).
+pub fn envia_relatorio(srv: &Servidor, token: &str, versao: &str, texto: &str) -> Result<()> {
+    let mut r = com_sessao(agente().post(&srv.url("/api/relatorio")), token)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("X-Lincast-Versao", versao)
+        .send(texto.as_bytes())
+        .context("não consegui falar com o servidor")?;
+    let status = r.status().as_u16();
+    if status == 200 {
+        Ok(())
+    } else {
+        let v: Value = r.body_mut().read_json().unwrap_or(Value::Null);
+        bail!("{}", erro_do_corpo(&v, status));
+    }
+}
+
 /// Atualiza o status de presença (POST /api/status).
 /// Valores aceitos: "online", "ausente", "ocupado".
 pub fn define_status(srv: &Servidor, token: &str, status_str: &str) -> Result<()> {
@@ -978,32 +975,6 @@ pub fn envia_atividade(srv: &Servidor, token: &str, atv: Option<&Atividade>) -> 
     }
 }
 
-/// Consulta se o login pelo navegador/Discord já foi concluído (/api/login-poll).
-/// Retorna Ok(Some(token)) quando confirmado, Ok(None) se ainda pendente, ou Err.
-pub fn poll_login_discord(srv: &Servidor, login_id: &str) -> Result<Option<String>> {
-    let url = format!("{}/api/login-poll?loginId={}", srv.base, login_id);
-    let mut r = agente()
-        .get(&url)
-        .call()
-        .context("falha ao consultar login-poll")?;
-
-    let token = r
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .find_map(|c| c.strip_prefix("session="))
-        .map(|c| c.split(';').next().unwrap_or("").to_string());
-
-    let corpo: Value = r.body_mut().read_json().unwrap_or(Value::Null);
-    let ready = corpo["ready"].as_bool().unwrap_or(false);
-
-    if ready && let Some(t) = token.filter(|t| !t.is_empty()) {
-        return Ok(Some(t));
-    }
-    Ok(None)
-}
-
 /// Métricas do servidor retornadas por /api/metrics.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1066,6 +1037,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grupo_do_wordle_aceita_dia_como_texto_ou_numero() {
+        // Resposta real do servidor depois das rodadas: `dia` vem como texto.
+        let v = json!({"dia":"20743_r2","numero":290,"streak":0,
+            "hoje":[{"uid":"local:1","name":"val47","avatar":null,"n":1,"fim":null,"cores":["yyxxx"]}],
+            "ontem":[]});
+        let g: GrupoWordle = serde_json::from_value(v).unwrap();
+        assert_eq!(g.dia, "20743_r2");
+        assert_eq!(g.hoje.len(), 1);
+        let g: GrupoWordle = serde_json::from_value(json!({"dia":20743})).unwrap();
+        assert_eq!(g.dia, "20743");
+    }
+
+    #[test]
     fn codifica_url_escapa_o_que_nao_e_seguro() {
         assert_eq!(codifica_url("dm_local:abc"), "dm_local%3Aabc");
         assert_eq!(
@@ -1073,17 +1057,6 @@ mod tests {
             "relat%C3%B3rio%20final.bin"
         );
         assert_eq!(codifica_url("a-b_c.d~e"), "a-b_c.d~e");
-    }
-
-    #[test]
-    fn testa_gera_login_id_seguro_formato_e_unicidade() {
-        let id1 = gera_login_id_seguro();
-        let id2 = gera_login_id_seguro();
-        assert_eq!(id1.len(), 32);
-        assert_eq!(id2.len(), 32);
-        assert_ne!(id1, id2);
-        assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(id2.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1311,8 +1284,10 @@ pub struct JogadorWordle {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 pub struct GrupoWordle {
-    #[serde(default)]
-    pub dia: i64,
+    /// Chave da rodada: `"20743"` ou `"20743_r2"`. O servidor manda texto
+    /// (antes das rodadas mandava número), por isso aceita os dois.
+    #[serde(default, deserialize_with = "texto_ou_numero")]
+    pub dia: String,
     #[serde(default)]
     pub numero: i64,
     #[serde(default)]
@@ -1323,14 +1298,28 @@ pub struct GrupoWordle {
     pub ontem: Vec<JogadorWordle>,
 }
 
+fn texto_ou_numero<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<String, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => s,
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    })
+}
+
 fn le_json_ou_erro(r: &mut ureq::http::Response<ureq::Body>) -> Result<(u16, Value)> {
     let status = r.status().as_u16();
     let v: Value = r.body_mut().read_json().unwrap_or(Value::Null);
     Ok((status, v))
 }
 
-pub fn wordle_estado(srv: &Servidor, token: &str) -> Result<EstadoWordle> {
-    let mut r = com_sessao(agente().get(&srv.url("/api/wordle")), token).call()?;
+pub fn wordle_estado(srv: &Servidor, token: &str, dia: Option<&str>) -> Result<EstadoWordle> {
+    let mut url = srv.url("/api/wordle");
+    if let Some(d) = dia {
+        url.push_str(&format!("?dia={}", codifica_segmento(d)));
+    }
+    let mut r = com_sessao(agente().get(&url), token).call()?;
     let (status, v) = le_json_ou_erro(&mut r)?;
     if status != 200 {
         anyhow::bail!("{}", erro_do_corpo(&v, status));
@@ -1344,9 +1333,14 @@ pub fn wordle_tenta(
     srv: &Servidor,
     token: &str,
     palavra: &str,
+    dia: Option<&str>,
 ) -> std::result::Result<EstadoWordle, (String, String)> {
+    let mut corpo = json!({ "palavra": palavra });
+    if let Some(d) = dia {
+        corpo["dia"] = json!(d);
+    }
     let mut r = com_sessao(agente().post(&srv.url("/api/wordle/tentar")), token)
-        .send_json(json!({ "palavra": palavra }))
+        .send_json(corpo)
         .map_err(|e| ("rede".to_string(), e.to_string()))?;
     let (status, v) = le_json_ou_erro(&mut r).map_err(|e| ("rede".to_string(), e.to_string()))?;
     if status == 200 {
@@ -1358,11 +1352,19 @@ pub fn wordle_tenta(
     ))
 }
 
-pub fn wordle_grupo(srv: &Servidor, token: &str, conversa: &str) -> Result<GrupoWordle> {
-    let url = srv.url(&format!(
+pub fn wordle_grupo(
+    srv: &Servidor,
+    token: &str,
+    conversa: &str,
+    dia: Option<&str>,
+) -> Result<GrupoWordle> {
+    let mut url = srv.url(&format!(
         "/api/conversas/{}/wordle",
         codifica_segmento(conversa)
     ));
+    if let Some(d) = dia {
+        url.push_str(&format!("?dia={}", codifica_segmento(d)));
+    }
     let mut r = com_sessao(agente().get(&url), token).call()?;
     let (status, v) = le_json_ou_erro(&mut r)?;
     if status != 200 {
@@ -1378,6 +1380,21 @@ pub fn wordle_inicia(srv: &Servidor, token: &str, conversa: &str) -> Result<()> 
         codifica_segmento(conversa)
     ));
     let mut r = com_sessao(agente().post(&url), token).send_json(json!({}))?;
+    let (status, v) = le_json_ou_erro(&mut r)?;
+    if status != 200 {
+        anyhow::bail!("{}", erro_do_corpo(&v, status));
+    }
+    Ok(())
+}
+
+/// [DEV] Sorteia uma nova palavra do Wordle para hoje e inicia nova rodada para o grupo.
+pub fn wordle_dev_trocar(srv: &Servidor, token: &str, conversa: Option<&str>) -> Result<()> {
+    let mut corpo = json!({});
+    if let Some(c) = conversa {
+        corpo["conversa"] = json!(c);
+    }
+    let mut r =
+        com_sessao(agente().post(&srv.url("/api/wordle/dev/trocar")), token).send_json(corpo)?;
     let (status, v) = le_json_ou_erro(&mut r)?;
     if status != 200 {
         anyhow::bail!("{}", erro_do_corpo(&v, status));

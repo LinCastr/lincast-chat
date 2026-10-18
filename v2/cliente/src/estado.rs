@@ -7,6 +7,8 @@ pub(crate) struct App {
     pub(crate) token: Option<String>,
     pub(crate) eu: Option<Eu>,
     pub(crate) tela: Tela,
+    /// Sala cuja chamada de voz continua ativa enquanto o usuário navega em Amigos ou em outra conversa.
+    pub(crate) chamada_ativa: Option<Box<SalaAberta>>,
     pub(crate) modal_meu_perfil: Option<ui::perfil::EdicaoPerfil>,
     pub(crate) modal_outro_perfil: Option<api::PerfilCompleto>,
     pub(crate) ver_perfil: ui::perfil::EstadoVerPerfil,
@@ -86,9 +88,30 @@ pub(crate) struct App {
     /// Para onde ir depois que a pessoa confirmar sair da chamada.
     pub(crate) abrir_apos_sair: Option<Destino>,
     pub(crate) avisos_cmd: Option<tokio::sync::mpsc::UnboundedSender<avisos::Comando>>,
+    pub(crate) modal_foto: Option<ModalFoto>,
+    pub(crate) modal_visao_jogo: Option<ModalVisaoJogo>,
+    pub(crate) jogos_reg_renomeando: Option<(String, String)>,
+    pub(crate) jogos_reg_seletor_aberto: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModalFoto {
+    pub url: String,
+    pub titulo: String,
+    pub zoom: f32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModalVisaoJogo {
+    pub nome: String,
+    pub exec: Option<String>,
+    pub capa: Option<u64>,
+    pub manual: bool,
+    pub ultimo: u64,
 }
 
 /// Destino pedido enquanto havia uma chamada em andamento.
+#[allow(dead_code)]
 pub(crate) enum Destino {
     Conversa(String),
     Amigos,
@@ -138,8 +161,6 @@ pub(crate) struct Login {
     pub(crate) criando: bool,
     pub(crate) enviando: bool,
     pub(crate) erro: Option<String>,
-    pub(crate) discord_login_id: Option<String>,
-    pub(crate) aguardando_discord: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -183,7 +204,8 @@ pub(crate) struct SalaAberta {
     pub(crate) painel: Option<PainelFlutuante>,
     /// Jogo de Wordle aberto nesta conversa e o resumo do grupo (quem jogou, cores).
     pub(crate) wordle: Option<ui::wordle::EstadoUiWordle>,
-    pub(crate) wordle_grupo: Option<api::GrupoWordle>,
+    /// Resumo do grupo por rodada (`dia`): cada mensagem do Wordle mostra a sua.
+    pub(crate) wordle_grupo: std::collections::HashMap<String, api::GrupoWordle>,
     /// Quando a pessoa entrou na chamada (cronômetro da coluna).
     pub(crate) chamada_desde: Option<std::time::Instant>,
     pub(crate) comandos: Option<mpsc::UnboundedSender<Comando>>,
@@ -302,19 +324,12 @@ pub(crate) enum Msg {
     AlternaCriar,
     Entrar,
     Entrou(Result<String, String>),
-    IniciaDiscordLogin,
-    CancelaDiscordLogin,
-    TickPollDiscord(String),
-    DiscordPollResultado {
-        login_id: String,
-        token: Option<String>,
-    },
     // salas
     /// Abre a conversa (o id é o nome da sala interna no servidor).
     AbreSala(String),
     Deslogar,
     // sala
-    Sala(Evento),
+    SalaDe(String, Evento),
     Rascunho(String),
     EnviaChat,
     IniciaEdicaoChat(String),
@@ -335,6 +350,7 @@ pub(crate) enum Msg {
     DesafixaChat,
     TickDigitando,
     CompletaMencao(String),
+    AplicaComandoChat(String),
     CopiaTexto(String),
     AbreLink(String),
     EscolheArquivoImagem,
@@ -371,6 +387,10 @@ pub(crate) enum Msg {
     SelecionaEntradaAudio(String),
     SelecionaSaidaAudio(String),
     AlternaTesteMic,
+    DispositivosAvulsosLidos {
+        entradas: Vec<dispositivos::DispositivoAudio>,
+        saidas: Vec<dispositivos::DispositivoAudio>,
+    },
     PedeCamera,
     TrocaCameraPrevia(usize),
     ConfirmaCamera,
@@ -479,12 +499,31 @@ pub(crate) enum Msg {
     AlternaNotificaMencoes,
     AlternaSomDoToque,
     AlternaAutostart,
+    AlternaEnviarRelatorio,
     JogosRegFiltro(String),
     JogosRegAtualiza,
     /// Executável escolhido na lista de programas abertos.
     JogosRegAdiciona(String),
     JogosRegAdicionado,
     JogosRegRemove(String),
+    JogosRegIniciaRenomear {
+        exec: String,
+        nome_atual: String,
+    },
+    JogosRegRascunhoNome(String),
+    JogosRegSalvaNome,
+    JogosRegCancelaRenomear,
+    JogosRegAlternaAtivo(String),
+    JogosRegAlternaSeletor,
+    AbreVisaoJogo(ModalVisaoJogo),
+    FechaVisaoJogo,
+    AbreFoto {
+        url: String,
+        titulo: String,
+    },
+    FechaFoto,
+    ZoomFoto(f32),
+    ResetaZoomFoto,
     AtendeToque(String),
     RecusaToque(String),
     AbreMenuPessoa {
@@ -694,5 +733,19 @@ pub(crate) enum Msg {
     AtualizacaoManual(Result<Option<ui::atualizacao::InfoAtualizacao>, String>),
     InstalaAtualizacao,
     AtualizacaoInstalada(Result<String, String>),
+    WordleDevTrocou(Result<(), String>),
+    DefineVolumeToque(u8),
+    DefineVolumeEfeitos(u8),
+    TestaToque,
     Nenhum,
+}
+
+impl App {
+    /// Indica se o usuário está em chamada ativa, na tela visível ou em segundo plano.
+    pub(crate) fn em_chamada(&self) -> bool {
+        match &self.tela {
+            Tela::Sala(s) if s.na_chamada => true,
+            _ => self.chamada_ativa.as_ref().is_some_and(|c| c.na_chamada),
+        }
+    }
 }

@@ -614,6 +614,13 @@ pub fn detecta_jogo_linux() -> Option<JogoAtividade> {
             {
                 candidato_atalho = Some(atalho_id);
             }
+
+            if let Some(caminho) = variavel_do_ambiente(&environ, "APPIMAGE") {
+                let ai_base = caminho.rsplit('/').next().unwrap_or("").to_lowercase();
+                if !ai_base.is_empty() {
+                    exes_abertos.insert(ai_base);
+                }
+            }
         }
 
         if let Ok(cgroup) = fs::read_to_string(pid_path.join("cgroup"))
@@ -695,10 +702,9 @@ pub fn detecta_jogo_linux() -> Option<JogoAtividade> {
     }
 
     // Programas que a pessoa registrou à mão em Configurações → Jogos registrados.
-    if let Some(r) = crate::jogos_registrados::carrega()
-        .into_iter()
-        .find(|r| r.manual && r.exec.as_deref().is_some_and(|e| exes_abertos.contains(e)))
-    {
+    if let Some(r) = crate::jogos_registrados::carrega().into_iter().find(|r| {
+        r.ativo && r.manual && r.exec.as_deref().is_some_and(|e| exes_abertos.contains(e))
+    }) {
         return Some(JogoAtividade {
             nome: r.nome,
             origem: Some("manual".to_string()),
@@ -983,6 +989,15 @@ pub fn detecta_atividade() -> Option<Atividade> {
         // Nome certo e capa, quando o jogo já está registrado; e anota que foi visto.
         crate::jogos_registrados::enriquece(j);
         crate::jogos_registrados::registra_visto(j);
+    }
+    // Desligado em Configurações → Jogos registrados: não aparece. Antes só
+    // valia para o jogo adicionado à mão; o de Steam/Flatpak seguia aparecendo
+    // e o interruptor do "Jogo atual" não fazia nada.
+    if jogo
+        .as_ref()
+        .is_some_and(|j| crate::jogos_registrados::desativado(&j.nome))
+    {
+        jogo = None;
     }
     let musica = detecta_musica_linux();
 

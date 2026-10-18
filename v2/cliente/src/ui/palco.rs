@@ -9,6 +9,7 @@ use crate::{Msg, fraco, icones, negrito, tema, ui};
 pub struct PessoaNoPalco<'a> {
     pub uid: &'a str,
     pub nome: &'a str,
+    pub usuario: Option<&'a str>,
     pub avatar: Option<&'a str>,
     pub falando: bool,
     pub mudo: bool,
@@ -29,6 +30,23 @@ pub struct BarraDoPalco {
 
 const TAMANHO: f32 = 80.0;
 
+/// Quem ainda está tocando: o avatar inteiro apagado (véu da cor do palco).
+/// Antes só a letra ficava transparente e o círculo seguia com cor cheia.
+fn apagado<'a>(foto: Element<'a, Msg>, lado: f32, fundo: Color) -> Element<'a, Msg> {
+    let veu = container(space())
+        .width(lado)
+        .height(lado)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(Color { a: 0.6, ..fundo })),
+            border: Border {
+                radius: (lado / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    iced::widget::stack![foto, veu].into()
+}
+
 fn tile<'a>(p: &PessoaNoPalco<'a>, pulso: bool, fundo: Color) -> Element<'a, Msg> {
     let c = tema::cores();
     let anel_cor = if p.falando {
@@ -41,16 +59,8 @@ fn tile<'a>(p: &PessoaNoPalco<'a>, pulso: bool, fundo: Color) -> Element<'a, Msg
         Color::TRANSPARENT
     };
     let foto = ui::avatar::avatar(p.avatar, p.uid, p.nome, TAMANHO, None, fundo);
-    let foto: Element<'a, Msg> = if p.chamando {
-        container(foto)
-            .style(|_| container::Style {
-                text_color: Some(Color {
-                    a: 0.45,
-                    ..Color::WHITE
-                }),
-                ..Default::default()
-            })
-            .into()
+    let foto = if p.chamando {
+        apagado(foto, TAMANHO, fundo)
     } else {
         foto
     };
@@ -94,14 +104,27 @@ fn tile<'a>(p: &PessoaNoPalco<'a>, pulso: bool, fundo: Color) -> Element<'a, Msg
         .size(12)
         .style(fraco)
         .wrapping(iced::widget::text::Wrapping::None);
-    column![
+    let bloco = column![
         stack(camadas).width(TAMANHO + 8.0).height(TAMANHO + 8.0),
         nome
     ]
     .spacing(4)
     .align_x(Alignment::Center)
-    .width(TAMANHO + 24.0)
-    .into()
+    .width(TAMANHO + 24.0);
+
+    iced::widget::mouse_area(bloco)
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Msg::AbrePrevia {
+            uid: Some(p.uid.to_string()),
+            nome: p.nome.to_string(),
+            app: false,
+        })
+        .on_right_press(Msg::AbreMenuPessoa {
+            uid: p.uid.to_string(),
+            usuario: p.usuario.map(str::to_string),
+            nome: p.nome.to_string(),
+        })
+        .into()
 }
 
 /// Avatar pequeno da coluna da direita quando uma transmissão está em foco.
@@ -113,28 +136,31 @@ fn tile_mini<'a>(p: &PessoaNoPalco<'a>, fundo: Color) -> Element<'a, Msg> {
         Color::TRANSPARENT
     };
     let foto = ui::avatar::avatar(p.avatar, p.uid, p.nome, 40.0, None, fundo);
-    let foto: Element<'a, Msg> = if p.chamando {
-        container(foto)
-            .style(|_| container::Style {
-                text_color: Some(Color {
-                    a: 0.45,
-                    ..Color::WHITE
-                }),
-                ..Default::default()
-            })
-            .into()
+    let foto = if p.chamando {
+        apagado(foto, 40.0, fundo)
     } else {
         foto
     };
-    container(foto)
-        .padding(2)
-        .style(move |_| container::Style {
-            border: Border {
-                color: anel,
-                width: 2.0,
-                radius: 24.0.into(),
-            },
-            ..Default::default()
+    let bloco = container(foto).padding(2).style(move |_| container::Style {
+        border: Border {
+            color: anel,
+            width: 2.0,
+            radius: 24.0.into(),
+        },
+        ..Default::default()
+    });
+
+    iced::widget::mouse_area(bloco)
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Msg::AbrePrevia {
+            uid: Some(p.uid.to_string()),
+            nome: p.nome.to_string(),
+            app: false,
+        })
+        .on_right_press(Msg::AbreMenuPessoa {
+            uid: p.uid.to_string(),
+            usuario: p.usuario.map(str::to_string),
+            nome: p.nome.to_string(),
         })
         .into()
 }
@@ -150,11 +176,17 @@ fn botao_da_barra<'a>(
         "Microfone" | "Atividades" => crate::ui::efeitos::Efeito::Balanco,
         _ => crate::ui::efeitos::Efeito::Nenhum,
     };
-    crate::ui::efeitos::com_dica(
-        crate::ui::efeitos::botao_icone_anim(titulo, icone, ligado, perigo, msg, efeito),
-        titulo,
-        iced::widget::tooltip::Position::Top,
-    )
+    let botao = crate::ui::efeitos::botao_icone_anim(titulo, icone, ligado, perigo, msg, efeito);
+    // Com o popup aberto (botão "ligado"), a dica sairia em cima do popup.
+    if ligado
+        && matches!(
+            titulo,
+            "Atividades" | "Sons" | "Mais" | "Dispositivos de voz"
+        )
+    {
+        return botao;
+    }
+    crate::ui::efeitos::com_dica(botao, titulo, iced::widget::tooltip::Position::Top)
 }
 
 fn barra<'a>(b: &BarraDoPalco) -> Element<'a, Msg> {
@@ -311,8 +343,8 @@ fn cartao_de_menu<'a>(itens: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 }
 
 /// Menu "Atividades" (popup acima do botão, ver `SalaAberta::camada_painel`).
-pub fn menu_atividades<'a>() -> Element<'a, Msg> {
-    cartao_de_menu(vec![
+pub fn menu_atividades<'a>(eh_grupo: bool) -> Element<'a, Msg> {
+    let mut itens = vec![
         ui::menu::item(icones::lapis(), "Quadro branco", Msg::AlternarQuadro, false),
         ui::menu::item(icones::roda(), "Roleta", Msg::AlternarRoletas, false),
         ui::menu::item(
@@ -321,13 +353,16 @@ pub fn menu_atividades<'a>() -> Element<'a, Msg> {
             Msg::AlternarCriadorEnquete,
             false,
         ),
-        ui::menu::item(
+    ];
+    if eh_grupo {
+        itens.push(ui::menu::item(
             icones::grade_3x3(),
             "Wordle",
             Msg::Wordle(crate::ui::wordle::WordleMsg::Inicia),
             false,
-        ),
-    ])
+        ));
+    }
+    cartao_de_menu(itens)
 }
 
 pub fn menu_mais_palco<'a>() -> Element<'a, Msg> {
@@ -347,7 +382,7 @@ pub fn menu_mais_palco<'a>() -> Element<'a, Msg> {
         ),
         ui::menu::item(
             icones::configuracoes(),
-            "Configurações de voz e vídeo",
+            "Configurações de voz",
             Msg::AbreConfiguracoes(Some(ui::configuracoes::AbaConfig::VozVideo)),
             false,
         ),

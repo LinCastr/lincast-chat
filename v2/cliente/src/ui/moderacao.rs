@@ -1,5 +1,5 @@
 //! Marca do dono do grupo. A moderação (remover pessoas, trocar nome e ícone)
-//! passou para o grupo e acontece por HTTP.
+//! passou para o grupo e acontece por HTTP; ver `HANDOFF.md` (C4/C5/C7).
 
 use iced::Element;
 use iced::widget::svg;

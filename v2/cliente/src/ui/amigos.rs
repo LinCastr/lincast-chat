@@ -322,22 +322,22 @@ pub fn painel_amigos<'a>(
         }
     };
 
-    let principal = column![
+    // A barra de abas atravessa a tela toda (por cima de "Ativo agora"), com a
+    // mesma altura e a mesma linha da barra de cima da conversa.
+    let topo = column![
         container(barra_abas)
-            .padding([12, 16])
+            .padding([0, 16])
+            .height(52)
+            .width(Length::Fill)
+            .align_y(Alignment::Center),
+        container(space().height(1))
+            .width(Length::Fill)
             .style(move |_| container::Style {
-                background: Some(iced::Background::Color(c.lateral)),
-                border: Border {
-                    color: c.borda,
-                    width: 1.0,
-                    ..Default::default()
-                },
+                background: Some(iced::Background::Color(c.borda)),
                 ..Default::default()
             }),
-        conteudo,
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill);
+    ];
+    let principal = container(conteudo).width(Length::Fill).height(Length::Fill);
     let ativos: Vec<&CartaoPerfil> = dados
         .map(|d| {
             d.amigos
@@ -346,15 +346,19 @@ pub fn painel_amigos<'a>(
                 .collect()
         })
         .unwrap_or_default();
-    row![
-        principal,
-        container(space().width(1))
-            .height(Length::Fill)
-            .style(move |_| container::Style {
-                background: Some(iced::Background::Color(c.borda)),
-                ..Default::default()
-            }),
-        coluna_ativo_agora(&ativos),
+    column![
+        topo,
+        row![
+            principal,
+            container(space().width(1))
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(c.borda)),
+                    ..Default::default()
+                }),
+            coluna_ativo_agora(&ativos),
+        ]
+        .height(Length::Fill),
     ]
     .into()
 }
@@ -379,36 +383,44 @@ fn coluna_ativo_agora<'a>(ativos: &[&'a CartaoPerfil]) -> Element<'a, Msg> {
     for a in ativos {
         let st = a.status.as_deref().unwrap_or("offline");
         let sub = formata_atividade(a.atividade.as_ref(), a.em_chamada).unwrap_or_default();
-        col = col.push(
-            container(
-                row![
-                    crate::ui::avatar::avatar(
-                        a.avatar.as_deref(),
-                        &a.uid,
-                        &a.name,
-                        36.0,
-                        Some(st),
-                        c.elevado,
-                    ),
-                    column![
-                        text(&a.name).size(14).font(negrito()),
-                        text(sub).size(12).style(fraco),
-                    ]
-                    .spacing(2),
+        let item = container(
+            row![
+                crate::ui::avatar::avatar(
+                    a.avatar.as_deref(),
+                    &a.uid,
+                    &a.name,
+                    36.0,
+                    Some(st),
+                    c.elevado,
+                ),
+                column![
+                    text(&a.name).size(14).font(negrito()),
+                    text(sub).size(12).style(fraco),
                 ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-            )
-            .padding(10)
-            .width(Length::Fill)
-            .style(move |_| container::Style {
-                background: Some(iced::Background::Color(c.elevado)),
-                border: Border {
-                    radius: tema::RAIO_GRANDE.into(),
-                    ..Default::default()
-                },
+                .spacing(2),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .padding(10)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(iced::Background::Color(c.elevado)),
+            border: Border {
+                radius: tema::RAIO_GRANDE.into(),
                 ..Default::default()
-            }),
+            },
+            ..Default::default()
+        });
+        col = col.push(
+            iced::widget::mouse_area(item)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Msg::AbrePerfilUsuario(a.usuario.clone()))
+                .on_right_press(Msg::AbreMenuPessoa {
+                    uid: a.uid.clone(),
+                    usuario: Some(a.usuario.clone()),
+                    nome: a.name.clone(),
+                }),
         );
     }
     container(scrollable(col).style(tema::rolagem))
@@ -459,6 +471,19 @@ fn card_amigo<'a>(amigo: &'a CartaoPerfil, confirmando_remocao: bool) -> Element
     };
 
     let info_col = column![linha_nome, linha_subtexto].spacing(2);
+
+    let perfil_clicavel = iced::widget::mouse_area(
+        row![avatar_circulo, info_col]
+            .spacing(12)
+            .align_y(Alignment::Center),
+    )
+    .interaction(iced::mouse::Interaction::Pointer)
+    .on_press(Msg::AbrePerfilUsuario(amigo.usuario.clone()))
+    .on_right_press(Msg::AbreMenuPessoa {
+        uid: amigo.uid.clone(),
+        usuario: Some(amigo.usuario.clone()),
+        nome: amigo.name.clone(),
+    });
 
     let acoes: Element<'a, Msg> = if confirmando_remocao {
         row![
@@ -525,7 +550,7 @@ fn card_amigo<'a>(amigo: &'a CartaoPerfil, confirmando_remocao: bool) -> Element
     };
 
     container(
-        row![avatar_circulo, info_col, space().width(Length::Fill), acoes,]
+        row![perfil_clicavel, space().width(Length::Fill), acoes,]
             .spacing(12)
             .align_y(Alignment::Center),
     )
@@ -548,13 +573,24 @@ fn card_pedido_recebido<'a>(pedido: &'a CartaoPerfil) -> Element<'a, Msg> {
     let uid = pedido.uid.clone();
     let uid_recusar = pedido.uid.clone();
 
+    let info_usuario = iced::widget::mouse_area(
+        column![
+            text(&pedido.name).size(14).font(negrito()),
+            text(format!("@{}", pedido.usuario)).size(12).style(fraco),
+        ]
+        .spacing(2),
+    )
+    .interaction(iced::mouse::Interaction::Pointer)
+    .on_press(Msg::AbrePerfilUsuario(pedido.usuario.clone()))
+    .on_right_press(Msg::AbreMenuPessoa {
+        uid: pedido.uid.clone(),
+        usuario: Some(pedido.usuario.clone()),
+        nome: pedido.name.clone(),
+    });
+
     container(
         row![
-            column![
-                text(&pedido.name).size(14).font(negrito()),
-                text(format!("@{}", pedido.usuario)).size(12).style(fraco),
-            ]
-            .spacing(2),
+            info_usuario,
             space().width(Length::Fill),
             button(text("Aceitar").size(12))
                 .padding([6, 12])
@@ -589,15 +625,26 @@ fn card_pedido_enviado<'a>(pedido: &'a CartaoPerfil) -> Element<'a, Msg> {
     let c = tema::cores();
     let uid = pedido.uid.clone();
 
+    let info_usuario = iced::widget::mouse_area(
+        column![
+            text(&pedido.name).size(14).font(negrito()),
+            text(format!("@{} • Pedido enviado pendente", pedido.usuario))
+                .size(12)
+                .style(fraco),
+        ]
+        .spacing(2),
+    )
+    .interaction(iced::mouse::Interaction::Pointer)
+    .on_press(Msg::AbrePerfilUsuario(pedido.usuario.clone()))
+    .on_right_press(Msg::AbreMenuPessoa {
+        uid: pedido.uid.clone(),
+        usuario: Some(pedido.usuario.clone()),
+        nome: pedido.name.clone(),
+    });
+
     container(
         row![
-            column![
-                text(&pedido.name).size(14).font(negrito()),
-                text(format!("@{} • Pedido enviado pendente", pedido.usuario))
-                    .size(12)
-                    .style(fraco),
-            ]
-            .spacing(2),
+            info_usuario,
             space().width(Length::Fill),
             button(text("Cancelar").size(12))
                 .padding([6, 12])

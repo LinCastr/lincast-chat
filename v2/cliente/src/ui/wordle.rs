@@ -2,7 +2,7 @@
 //! valida cada tentativa e devolve só as cores. Aqui ficam o jogo, a barra de
 //! controles, a mensagem de "app" no chat e o estado do que está na tela.
 
-use iced::widget::{Column, button, column, container, row, space, text, text_input};
+use iced::widget::{Column, button, column, container, row, space, text};
 use iced::{Alignment, Background, Border, Color, Element, Length, Task};
 
 use crate::api::{EstadoWordle, GrupoWordle, JogadorWordle};
@@ -33,6 +33,7 @@ pub struct EstadoUiWordle {
     pub erro: Option<String>,
     pub modo: ModoWordle,
     pub enviando: bool,
+    pub rodada_dia: Option<String>,
 }
 
 impl EstadoUiWordle {
@@ -43,30 +44,31 @@ impl EstadoUiWordle {
             erro: None,
             modo: ModoWordle::Normal,
             enviando: false,
+            rodada_dia: None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum WordleMsg {
-    /// "Play now!" na mensagem: abre o jogo de hoje.
-    Abre,
+    /// "Play now!" na mensagem: abre o jogo de hoje ou da rodada específica.
+    Abre(Option<String>),
     /// /wordle ou botão em Atividades: garante a mensagem do dia e abre o jogo.
     Inicia,
     Iniciado(Result<(), String>),
     Carregado(Result<EstadoWordle, String>),
-    Input(String),
     Tecla(char),
     Apaga,
     Envia,
     Resposta(Result<EstadoWordle, (String, String)>),
     Modo(ModoWordle),
     Fecha,
-    CarregaGrupo,
+    CarregaGrupo(Option<String>),
     Grupo(Result<GrupoWordle, String>),
 }
 
 /// Só letras a–z, em minúsculas, no máximo cinco.
+#[allow(dead_code)]
 pub fn filtra_entrada(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphabetic())
@@ -109,6 +111,10 @@ impl SalaAberta {
         match m {
             WordleMsg::Inicia => {
                 let conversa = self.entrada.sala.clone();
+                if !conversa.starts_with("grp_") {
+                    self.aviso = Some("O Wordle só está disponível em grupos.".to_string());
+                    return Task::none();
+                }
                 self.wordle = Some(EstadoUiWordle::novo());
                 return em_segundo_plano(
                     move || {
@@ -124,24 +130,29 @@ impl SalaAberta {
                     w.erro = Some(e);
                 }
                 return Task::batch([
-                    Task::done(Msg::Wordle(WordleMsg::Abre)),
-                    Task::done(Msg::Wordle(WordleMsg::CarregaGrupo)),
+                    Task::done(Msg::Wordle(WordleMsg::Abre(None))),
+                    Task::done(Msg::Wordle(WordleMsg::CarregaGrupo(None))),
                 ]);
             }
-            WordleMsg::Abre => {
+            WordleMsg::Abre(dia_opt) => {
                 if self.wordle.is_none() {
                     self.wordle = Some(EstadoUiWordle::novo());
                 }
                 if let Some(w) = &mut self.wordle {
                     w.modo = ModoWordle::Normal;
+                    if dia_opt.is_some() {
+                        w.rodada_dia = dia_opt.clone();
+                    }
                 }
-                return Task::batch([
-                    em_segundo_plano(
-                        move || api::wordle_estado(&srv, &token).map_err(|e| format!("{e:#}")),
-                        |r| Msg::Wordle(WordleMsg::Carregado(r)),
-                    ),
-                    iced::widget::operation::focus("wordle-input"),
-                ]);
+                let dia_para_busca =
+                    dia_opt.or_else(|| self.wordle.as_ref().and_then(|w| w.rodada_dia.clone()));
+                return em_segundo_plano(
+                    move || {
+                        api::wordle_estado(&srv, &token, dia_para_busca.as_deref())
+                            .map_err(|e| format!("{e:#}"))
+                    },
+                    |r| Msg::Wordle(WordleMsg::Carregado(r)),
+                );
             }
             WordleMsg::Carregado(r) => {
                 if let Some(w) = &mut self.wordle {
@@ -149,12 +160,6 @@ impl SalaAberta {
                         Ok(e) => w.estado = Some(e),
                         Err(e) => w.erro = Some(e),
                     }
-                }
-            }
-            WordleMsg::Input(s) => {
-                if let Some(w) = &mut self.wordle {
-                    w.atual = filtra_entrada(&s);
-                    w.erro = None;
                 }
             }
             WordleMsg::Tecla(c) => {
@@ -184,13 +189,15 @@ impl SalaAberta {
                 }
                 w.enviando = true;
                 let palavra = w.atual.clone();
+                let dia_envio = w.rodada_dia.clone();
                 return em_segundo_plano(
-                    move || api::wordle_tenta(&srv, &token, &palavra),
+                    move || api::wordle_tenta(&srv, &token, &palavra, dia_envio.as_deref()),
                     |r| Msg::Wordle(WordleMsg::Resposta(r)),
                 );
             }
             WordleMsg::Resposta(r) => {
                 let mut acabou = false;
+                let dia_opt = self.wordle.as_ref().and_then(|w| w.rodada_dia.clone());
                 if let Some(w) = &mut self.wordle {
                     w.enviando = false;
                     match r {
@@ -205,7 +212,7 @@ impl SalaAberta {
                 }
                 // O resumo do grupo (cores de quem jogou) muda a cada tentativa.
                 let _ = acabou;
-                return Task::done(Msg::Wordle(WordleMsg::CarregaGrupo));
+                return Task::done(Msg::Wordle(WordleMsg::CarregaGrupo(dia_opt)));
             }
             WordleMsg::Modo(modo) => {
                 if let Some(w) = &mut self.wordle {
@@ -213,20 +220,24 @@ impl SalaAberta {
                 }
             }
             WordleMsg::Fecha => self.wordle = None,
-            WordleMsg::CarregaGrupo => {
+            WordleMsg::CarregaGrupo(dia_opt) => {
                 let conversa = self.entrada.sala.clone();
+                let dia_busca =
+                    dia_opt.or_else(|| self.wordle.as_ref().and_then(|w| w.rodada_dia.clone()));
                 return em_segundo_plano(
                     move || {
-                        api::wordle_grupo(&srv, &token, &conversa).map_err(|e| format!("{e:#}"))
+                        api::wordle_grupo(&srv, &token, &conversa, dia_busca.as_deref())
+                            .map_err(|e| format!("{e:#}"))
                     },
                     |r| Msg::Wordle(WordleMsg::Grupo(r)),
                 );
             }
-            WordleMsg::Grupo(r) => {
-                if let Ok(g) = r {
-                    self.wordle_grupo = Some(g);
+            WordleMsg::Grupo(r) => match r {
+                Ok(g) => {
+                    self.wordle_grupo.insert(g.dia.clone(), g);
                 }
-            }
+                Err(e) => log::warn!("[wordle] resumo do grupo: {e}"),
+            },
         }
         Task::none()
     }
@@ -236,6 +247,8 @@ fn cor_da_letra(c: char) -> Color {
     match c {
         'g' => VERDE,
         'y' => AMARELO,
+        // No tema claro o cinza do Wordle é mais leve (#787c7e), como no original.
+        _ if tema::luminancia(tema::cores().fundo) > 0.5 => tema::rgb(0x787c7e),
         _ => CINZA,
     }
 }
@@ -274,20 +287,28 @@ fn tile<'a>(letra: Option<char>, cor: Option<char>, lado: f32) -> Element<'a, Ms
     .into()
 }
 
-fn tecla<'a>(rotulo: &str, msg: Msg, cor: Option<char>, largura: f32) -> Element<'a, Msg> {
+fn tecla<'a>(
+    rotulo: &str,
+    msg: Msg,
+    cor: Option<char>,
+    largura: f32,
+    altura: f32,
+) -> Element<'a, Msg> {
+    let tam_txt = (altura * 0.32).clamp(11.0, 14.0);
     let fundo = cor
         .map(cor_da_letra)
         .unwrap_or(Color::from_rgb8(0x81, 0x83, 0x84));
     button(
         text(rotulo.to_string())
-            .size(14)
+            .size(tam_txt)
             .font(negrito())
             .color(Color::WHITE)
             .width(Length::Fill)
             .align_x(Alignment::Center),
     )
     .width(largura)
-    .padding([12, 0])
+    .height(altura)
+    .padding([((altura - tam_txt * 1.3) / 2.0).max(0.0), 0.0])
     .style(move |_, st| button::Style {
         background: Some(Background::Color(
             if matches!(st, button::Status::Hovered) {
@@ -316,7 +337,7 @@ fn barra_de_controles<'a>(modo: ModoWordle) -> Element<'a, Msg> {
             18.0,
             if perigo { Color::WHITE } else { c.texto },
         ))
-        .padding([10, 14])
+        .padding([7, 11])
         .style(move |_, st| button::Style {
             background: Some(Background::Color(if perigo {
                 c.perigo
@@ -356,10 +377,8 @@ fn barra_de_controles<'a>(modo: ModoWordle) -> Element<'a, Msg> {
             ),
             b(icones::sair(), WordleMsg::Fecha, true),
         ]
-        .spacing(8),
+        .spacing(6),
     )
-    .center_x(Length::Fill)
-    .padding([8, 0])
     .into()
 }
 
@@ -369,6 +388,55 @@ pub fn tela_jogo<'a>(
     w: &'a EstadoUiWordle,
     pessoas_laterais: Vec<(&'a str, &'a str, Option<&'a str>)>,
 ) -> Element<'a, Msg> {
+    let c = tema::cores();
+    // O tamanho das peças acompanha o espaço: com altura fixa de 48 px o
+    // teclado ficava cortado no modo normal (3/5 da coluna).
+    let miolo = iced::widget::responsive(move |tam| jogo_no_tamanho(w, tam))
+        .width(Length::Fill)
+        .height(Length::Fill);
+    let miolo = container(miolo)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(c.palco)),
+            ..Default::default()
+        });
+    if pessoas_laterais.is_empty() {
+        return miolo.into();
+    }
+    // Modo apresentação: pessoas da chamada em faixa pequena ao lado.
+    let mut faixa = Column::new().spacing(10).padding(10).width(110);
+    for (uid, nome, foto) in pessoas_laterais {
+        faixa = faixa.push(
+            column![
+                crate::ui::avatar::avatar(foto, uid, nome, 48.0, None, c.palco),
+                text(nome.to_string())
+                    .size(11)
+                    .style(fraco)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            ]
+            .spacing(4)
+            .align_x(Alignment::Center),
+        );
+    }
+    row![miolo, container(faixa).style(tema::painel_lateral_reto)].into()
+}
+
+/// Lado da peça para caber em `tam`: grade de 6 linhas + 3 fileiras de teclas
+/// (cada uma ~0,85 da peça) + título, linha de estado e espaços (~150 px).
+pub fn lado_da_peca(tam: iced::Size, com_teclado: bool) -> f32 {
+    let (por_peca, fixo) = if com_teclado {
+        (8.55, 150.0)
+    } else {
+        (6.0, 110.0)
+    };
+    let pela_altura = (tam.height - fixo) / por_peca;
+    // Largura: 10 teclas de 0,75 da peça + espaços.
+    let pela_largura = (tam.width - 70.0) / 7.5;
+    pela_altura.min(pela_largura).clamp(22.0, 52.0)
+}
+
+fn jogo_no_tamanho<'a>(w: &'a EstadoUiWordle, tam: iced::Size) -> Element<'a, Msg> {
     let c = tema::cores();
     let max = w
         .estado
@@ -382,21 +450,24 @@ pub fn tela_jogo<'a>(
         .map(|e| e.tentativas.as_slice())
         .unwrap_or(&[]);
     let fim = w.estado.as_ref().and_then(|e| e.fim.clone());
+    let lado = lado_da_peca(tam, fim.is_none());
+    let alt_tecla = (lado * 0.85).round();
+    let larg_tecla = (lado * 0.75).round();
     let mut grade = Column::new().spacing(5).align_x(Alignment::Center);
     for i in 0..max {
         let mut linha = row![].spacing(5);
         if let Some(t) = tentativas.get(i) {
             for (l, cor) in t.palavra.chars().zip(t.cores.chars()) {
-                linha = linha.push(tile(Some(l), Some(cor), 48.0));
+                linha = linha.push(tile(Some(l), Some(cor), lado));
             }
         } else if i == tentativas.len() && fim.is_none() {
             let mut cs = w.atual.chars();
             for _ in 0..5 {
-                linha = linha.push(tile(cs.next(), None, 48.0));
+                linha = linha.push(tile(cs.next(), None, lado));
             }
         } else {
             for _ in 0..5 {
-                linha = linha.push(tile(None, None, 48.0));
+                linha = linha.push(tile(None, None, lado));
             }
         }
         grade = grade.push(linha);
@@ -407,18 +478,31 @@ pub fn tela_jogo<'a>(
     for (i, linha) in ["qwertyuiop", "asdfghjkl", "zxcvbnm"].iter().enumerate() {
         let mut r = row![].spacing(5);
         if i == 2 {
-            r = r.push(tecla("ENTER", Msg::Wordle(WordleMsg::Envia), None, 62.0));
+            r = r.push(tecla(
+                "ENTER",
+                Msg::Wordle(WordleMsg::Envia),
+                None,
+                larg_tecla * 1.7,
+                alt_tecla,
+            ));
         }
         for ch in linha.chars() {
             r = r.push(tecla(
                 &ch.to_ascii_uppercase().to_string(),
                 Msg::Wordle(WordleMsg::Tecla(ch)),
                 teclas.get(&ch).copied(),
-                36.0,
+                larg_tecla,
+                alt_tecla,
             ));
         }
         if i == 2 {
-            r = r.push(tecla("⌫", Msg::Wordle(WordleMsg::Apaga), None, 62.0));
+            r = r.push(tecla(
+                "⌫",
+                Msg::Wordle(WordleMsg::Apaga),
+                None,
+                larg_tecla * 1.7,
+                alt_tecla,
+            ));
         }
         teclado = teclado.push(r);
     }
@@ -459,53 +543,29 @@ pub fn tela_jogo<'a>(
     ]
     .spacing(10)
     .align_y(Alignment::End);
+    // Controles na linha do título (economiza uma linha inteira de altura).
+    let topo = row![
+        space().width(Length::Fill),
+        titulo,
+        container(barra_de_controles(w.modo))
+            .width(Length::Fill)
+            .align_x(Alignment::End),
+    ]
+    .align_y(Alignment::Center);
 
-    let mut jogo = column![titulo, grade, linha_estado]
+    let mut jogo = column![topo, grade, linha_estado]
         .spacing(10)
         .align_x(Alignment::Center);
     if fim.is_none() {
-        jogo = jogo.push(
-            text_input("Type your guess…", &w.atual)
-                .id("wordle-input")
-                .on_input(|s| Msg::Wordle(WordleMsg::Input(s)))
-                .on_submit(Msg::Wordle(WordleMsg::Envia))
-                .padding([8, 10])
-                .size(14)
-                .width(220)
-                .style(tema::campo),
-        );
         jogo = jogo.push(teclado);
     }
-    jogo = jogo.push(barra_de_controles(w.modo));
 
-    let miolo = container(jogo)
+    container(jogo)
         .width(Length::Fill)
         .height(Length::Fill)
         .center_x(Length::Fill)
         .padding(12)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(c.palco)),
-            ..Default::default()
-        });
-    if pessoas_laterais.is_empty() {
-        return miolo.into();
-    }
-    // Modo apresentação: pessoas da chamada em faixa pequena ao lado.
-    let mut faixa = Column::new().spacing(10).padding(10).width(110);
-    for (uid, nome, foto) in pessoas_laterais {
-        faixa = faixa.push(
-            column![
-                crate::ui::avatar::avatar(foto, uid, nome, 48.0, None, c.palco),
-                text(nome.to_string())
-                    .size(11)
-                    .style(fraco)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            ]
-            .spacing(4)
-            .align_x(Alignment::Center),
-        );
-    }
-    row![miolo, container(faixa).style(tema::painel_lateral_reto)].into()
+        .into()
 }
 
 /// O cartão "Wordle" da coluna da esquerda (jogo aberto ou minimizado).
@@ -567,12 +627,14 @@ fn mini_grade<'a>(j: &'a JogadorWordle) -> Element<'a, Msg> {
             }
             None => {
                 for _ in 0..5 {
+                    // Quadrado vazio: só a borda, como no Discord (e legível no tema claro).
                     r = r.push(container(space()).width(16).height(16).style(|_| {
                         container::Style {
-                            background: Some(Background::Color(Color::from_rgb8(0x18, 0x18, 0x1a))),
+                            background: None,
                             border: Border {
+                                color: tema::cores().borda,
+                                width: 1.0,
                                 radius: 2.0.into(),
-                                ..Default::default()
                             },
                             ..Default::default()
                         }
@@ -583,6 +645,15 @@ fn mini_grade<'a>(j: &'a JogadorWordle) -> Element<'a, Msg> {
         col = col.push(r);
     }
     col.into()
+}
+
+/// "Ana was playing", "Ana and Bia were playing", "Ana, Bia and Caio were playing".
+pub fn frase_jogando(nomes: &[&str]) -> String {
+    match nomes {
+        [] => String::new(),
+        [um] => format!("{um} was playing"),
+        [resto @ .., ultimo] => format!("{} and {ultimo} were playing", resto.join(", ")),
+    }
 }
 
 /// Quem ganhou primeiro (menos tentativas); quem perdeu por último.
@@ -680,26 +751,32 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
         }
         if !g.hoje.is_empty() {
             let nomes: Vec<&str> = g.hoje.iter().map(|j| j.name.as_str()).collect();
-            corpo = corpo.push(text(format!("{} was playing", nomes.join(", "))).size(14));
-            let mut cards = row![].spacing(12);
-            for j in &g.hoje {
-                cards = cards.push(
-                    container(
-                        row![
-                            crate::ui::avatar::avatar(
-                                j.avatar.as_deref(),
-                                &j.uid,
-                                &j.name,
-                                44.0,
-                                None,
-                                c.palco
-                            ),
-                            mini_grade(j),
-                        ]
-                        .spacing(12)
-                        .align_y(Alignment::Center),
-                    )
-                    .padding(12)
+            corpo = corpo.push(text(frase_jogando(&nomes)).size(14));
+            // Como no Discord: uma pessoa, avatar grande ao lado da grade; mais
+            // de uma, um cartão em pé por pessoa (avatar em cima).
+            let sozinho = g.hoje.len() == 1;
+            let cartao = |j: &'a JogadorWordle| -> Element<'a, Msg> {
+                let av = crate::ui::avatar::avatar(
+                    j.avatar.as_deref(),
+                    &j.uid,
+                    &j.name,
+                    if sozinho { 96.0 } else { 64.0 },
+                    None,
+                    c.palco,
+                );
+                let dentro: Element<'a, Msg> = if sozinho {
+                    row![av, mini_grade(j)]
+                        .spacing(28)
+                        .align_y(Alignment::Center)
+                        .into()
+                } else {
+                    column![av, mini_grade(j)]
+                        .spacing(10)
+                        .align_x(Alignment::Center)
+                        .into()
+                };
+                container(dentro)
+                    .padding(if sozinho { [16, 28] } else { [12, 14] })
                     .style(move |_| container::Style {
                         background: None,
                         border: Border {
@@ -708,9 +785,14 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
                             radius: tema::RAIO_GRANDE.into(),
                         },
                         ..Default::default()
-                    }),
-                );
+                    })
+                    .into()
+            };
+            let mut cards = row![].spacing(12);
+            for j in &g.hoje {
+                cards = cards.push(cartao(j));
             }
+            let cards = cards.wrap().vertical_spacing(12);
             corpo = corpo.push(
                 container(
                     column![text(format!("Wordle No. {}", g.numero)).size(13), cards,]
@@ -733,7 +815,7 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
         button(text("Play now!").size(13).font(negrito()))
             .padding([6, 12])
             .style(tema::botao_primario)
-            .on_press(Msg::Wordle(WordleMsg::Abre)),
+            .on_press(Msg::Wordle(WordleMsg::Abre(m.extra.wordle_dia.clone()))),
     );
     row![
         iced::widget::mouse_area(logo)
@@ -750,6 +832,25 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
 mod testes {
     use super::*;
     use crate::api::TentativaWordle;
+
+    #[test]
+    fn pecas_cabem_no_espaco() {
+        // Janela de 720 px no modo normal: ~370 px para o jogo.
+        let l = lado_da_peca(iced::Size::new(760.0, 370.0), true);
+        assert!(8.55 * l + 150.0 <= 370.0 + 0.5 || l == 22.0);
+        // Com espaço sobrando, para em 52.
+        assert_eq!(lado_da_peca(iced::Size::new(2000.0, 2000.0), true), 52.0);
+    }
+
+    #[test]
+    fn frase_de_quem_jogou() {
+        assert_eq!(frase_jogando(&["Ana"]), "Ana was playing");
+        assert_eq!(frase_jogando(&["Ana", "Bia"]), "Ana and Bia were playing");
+        assert_eq!(
+            frase_jogando(&["Ana", "Bia", "Caio"]),
+            "Ana, Bia and Caio were playing"
+        );
+    }
 
     #[test]
     fn entrada_so_aceita_letras_ate_cinco() {

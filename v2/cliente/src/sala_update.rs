@@ -70,6 +70,13 @@ impl SalaAberta {
         }
         match msg {
             Msg::Rascunho(v) => {
+                let wordle_ativo = self.wordle.as_ref().is_some_and(|w| {
+                    w.modo != ui::wordle::ModoWordle::Minimizado
+                        && w.estado.as_ref().and_then(|e| e.fim.as_ref()).is_none()
+                });
+                if wordle_ativo {
+                    return Task::none();
+                }
                 if !self.capturando_ptt {
                     self.rascunho = v;
                     let agora = std::time::Instant::now();
@@ -83,9 +90,23 @@ impl SalaAberta {
                         self.digitando_anunciado = false;
                         self.manda(Comando::Digitando(false));
                     }
+                    if self.rascunho == "/" {
+                        return iced::widget::operation::focus("chat-rascunho-input");
+                    }
                 }
             }
+            Msg::AplicaComandoChat(cmd) => {
+                self.rascunho = cmd;
+                return iced::widget::operation::focus("chat-rascunho-input");
+            }
             Msg::EnviaChat => {
+                let wordle_ativo = self.wordle.as_ref().is_some_and(|w| {
+                    w.modo != ui::wordle::ModoWordle::Minimizado
+                        && w.estado.as_ref().and_then(|e| e.fim.as_ref()).is_none()
+                });
+                if wordle_ativo {
+                    return Task::none();
+                }
                 self.nao_lidas = 0;
                 self.primeira_nao_lida_id = None;
                 if self.digitando_anunciado {
@@ -138,7 +159,29 @@ impl SalaAberta {
                                 return Task::none();
                             }
                             Some(ui::chat::ComandoChatResultado::AbreWordle) => {
+                                if !self.entrada.sala.starts_with("grp_") {
+                                    self.aviso =
+                                        Some("O Wordle só está disponível em grupos.".to_string());
+                                    return Task::none();
+                                }
                                 return Task::done(Msg::Wordle(ui::wordle::WordleMsg::Inicia));
+                            }
+                            Some(ui::chat::ComandoChatResultado::WordleTrocaPalavra) => {
+                                if !self.entrada.sala.starts_with("grp_") {
+                                    self.aviso =
+                                        Some("O Wordle só está disponível em grupos.".to_string());
+                                    return Task::none();
+                                }
+                                let srv = self.entrada.servidor.clone();
+                                let token = self.entrada.token.clone();
+                                let conversa = self.entrada.sala.clone();
+                                return em_segundo_plano(
+                                    move || -> anyhow::Result<()> {
+                                        api::wordle_dev_trocar(&srv, &token, Some(&conversa))?;
+                                        Ok(())
+                                    },
+                                    |res| Msg::WordleDevTrocou(res.map_err(|e| format!("{e:#}"))),
+                                );
                             }
                             Some(ui::chat::ComandoChatResultado::CriarEnquete(enq)) => {
                                 enquete = Some(enq);
@@ -266,6 +309,7 @@ impl SalaAberta {
                     self.rascunho.push_str(&nome);
                     self.rascunho.push(' ');
                 }
+                return iced::widget::operation::focus("chat-rascunho-input");
             }
             Msg::AbreLink(url) => {
                 let alvo = if url.starts_with("http://") || url.starts_with("https://") {
@@ -616,6 +660,7 @@ impl SalaAberta {
                     key,
                     modifiers,
                     repeat,
+                    physical_key,
                     ..
                 }) => {
                     if (modifiers.command() || modifiers.control())
@@ -646,13 +691,100 @@ impl SalaAberta {
                                 Err(e) => self.aviso = Some(e),
                             }
                         }
+                    } else if let Some(w) = &self.wordle
+                        && w.modo != ui::wordle::ModoWordle::Minimizado
+                        && w.estado.as_ref().and_then(|e| e.fim.as_ref()).is_none()
+                        // Esc segue para o ramo de baixo, que minimiza o jogo.
+                        && !matches!(
+                            key,
+                            iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
+                        )
+                        && !self.busca_chat_aberta
+                        && !self.capturando_ptt
+                        && !self.quadro.aberto
+                        && !self.roletas.aberto
+                        && !self.criador_enquete.aberto
+                        && self.editando.is_none()
+                        && !modifiers.control()
+                        && !modifiers.command()
+                        && !modifiers.alt()
+                    {
+                        match &key {
+                            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
+                                return Task::done(Msg::Wordle(ui::wordle::WordleMsg::Envia));
+                            }
+                            iced::keyboard::Key::Named(iced::keyboard::key::Named::Backspace) => {
+                                return Task::done(Msg::Wordle(ui::wordle::WordleMsg::Apaga));
+                            }
+                            iced::keyboard::Key::Character(s) => {
+                                if let Some(c) = s.chars().next()
+                                    && s.len() == 1
+                                    && c.is_ascii_alphabetic()
+                                {
+                                    return Task::done(Msg::Wordle(ui::wordle::WordleMsg::Tecla(
+                                        c,
+                                    )));
+                                }
+                            }
+                            _ => {
+                                if let iced::keyboard::key::Physical::Code(code) = physical_key {
+                                    use iced::keyboard::key::Code;
+                                    let ch = match code {
+                                        Code::KeyA => Some('a'),
+                                        Code::KeyB => Some('b'),
+                                        Code::KeyC => Some('c'),
+                                        Code::KeyD => Some('d'),
+                                        Code::KeyE => Some('e'),
+                                        Code::KeyF => Some('f'),
+                                        Code::KeyG => Some('g'),
+                                        Code::KeyH => Some('h'),
+                                        Code::KeyI => Some('i'),
+                                        Code::KeyJ => Some('j'),
+                                        Code::KeyK => Some('k'),
+                                        Code::KeyL => Some('l'),
+                                        Code::KeyM => Some('m'),
+                                        Code::KeyN => Some('n'),
+                                        Code::KeyO => Some('o'),
+                                        Code::KeyP => Some('p'),
+                                        Code::KeyQ => Some('q'),
+                                        Code::KeyR => Some('r'),
+                                        Code::KeyS => Some('s'),
+                                        Code::KeyT => Some('t'),
+                                        Code::KeyU => Some('u'),
+                                        Code::KeyV => Some('v'),
+                                        Code::KeyW => Some('w'),
+                                        Code::KeyX => Some('x'),
+                                        Code::KeyY => Some('y'),
+                                        Code::KeyZ => Some('z'),
+                                        Code::Enter | Code::NumpadEnter => {
+                                            return Task::done(Msg::Wordle(
+                                                ui::wordle::WordleMsg::Envia,
+                                            ));
+                                        }
+                                        Code::Backspace => {
+                                            return Task::done(Msg::Wordle(
+                                                ui::wordle::WordleMsg::Apaga,
+                                            ));
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(c) = ch {
+                                        return Task::done(Msg::Wordle(
+                                            ui::wordle::WordleMsg::Tecla(c),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     } else if self.capturando_ptt {
                         if matches!(
                             key,
                             iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
                         ) {
                             self.capturando_ptt = false;
-                        } else if let Some((id, rotulo)) = ptt::descreve_tecla(&key) {
+                        } else if let Some((id, rotulo)) =
+                            ptt::descreve_tecla_completa(&key, Some(&physical_key))
+                        {
                             self.ptt.tecla = id;
                             self.ptt.rotulo = rotulo;
                             ptt::salva_config(&self.ptt);
@@ -685,21 +817,28 @@ impl SalaAberta {
                             self.resposta_pendente = None;
                         } else if self.video_em_tela_cheia.is_some() {
                             self.video_em_tela_cheia = None;
+                        } else if let Some(w) = &mut self.wordle
+                            && w.modo != ui::wordle::ModoWordle::Minimizado
+                        {
+                            w.modo = ui::wordle::ModoWordle::Minimizado;
                         }
                     } else if self.ptt.ativo
                         && self.na_chamada
                         && !repeat
-                        && ptt::corresponde(&self.ptt.tecla, &key)
+                        && ptt::corresponde_completo(&self.ptt.tecla, &key, Some(&physical_key))
                         && !self.ptt_transmitindo
                     {
                         self.ptt_transmitindo = true;
                         self.manda(Comando::PttTransmitindo(true));
                     }
                 }
-                iced::Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. })
-                    if self.ptt.ativo
-                        && self.ptt_transmitindo
-                        && ptt::corresponde(&self.ptt.tecla, &key) =>
+                iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                    key,
+                    physical_key,
+                    ..
+                }) if self.ptt.ativo
+                    && self.ptt_transmitindo
+                    && ptt::corresponde_completo(&self.ptt.tecla, &key, Some(&physical_key)) =>
                 {
                     self.ptt_transmitindo = false;
                     self.manda(Comando::PttTransmitindo(false));
@@ -864,6 +1003,25 @@ impl SalaAberta {
                 self.quadro.aberto = !self.quadro.aberto;
             }
             Msg::Wordle(m) => return self.wordle_update(m),
+            Msg::WordleDevTrocou(res) => match res {
+                Ok(()) => {
+                    if let Some(w) = &mut self.wordle {
+                        w.atual.clear();
+                        w.erro = None;
+                        w.rodada_dia = None;
+                    }
+                    return Task::batch([
+                        Task::done(Msg::Toast(
+                            "A palavra do Wordle foi trocada com sucesso!".to_string(),
+                        )),
+                        Task::done(Msg::Wordle(ui::wordle::WordleMsg::Abre(None))),
+                        Task::done(Msg::Wordle(ui::wordle::WordleMsg::CarregaGrupo(None))),
+                    ]);
+                }
+                Err(e) => {
+                    return Task::done(Msg::Toast(format!("Erro ao sortear nova palavra: {e}")));
+                }
+            },
             Msg::Quadro(qmsg) => match qmsg {
                 ui::quadro::QuadroMsg::NovoPonto(x, y) => {
                     if let Some(pontos) = &mut self.quadro.traco_em_andamento {

@@ -14,8 +14,8 @@ use serde::Deserialize;
 
 use crate::{Msg, negrito, tema};
 
-/// Repositório público de binários (a antiga repo de releases da v1 foi
-/// transferida para cá). Ele guarda as releases da v1 (`v1.7.x`, assets
+/// Repositório público de binários (a antiga `Valcones47/concord-premium-releases`
+/// foi transferida para cá). Ele guarda as releases da v1 (`v1.7.x`, assets
 /// `concord-premium-*`); o v2 só enxerga as que trazem asset `lincast-chat*`,
 /// senão `v1.7.4` pareceria "mais nova" que `0.1.0` e levaria o instalador do
 /// Electron a quem usa o v2.
@@ -198,6 +198,18 @@ pub fn instala(info: &InfoAtualizacao) -> Result<String, String> {
         return Err("a release não traz o pacote para Linux x86_64".into());
     };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // Aberto por wrapper (`ld.so app`), o executável em uso é o carregador do
+    // sistema, não o app: trocá-lo quebraria a instalação. Só se atualiza
+    // sozinho o que está instalado com o nome do próprio app.
+    if !exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "lincast-chat")
+    {
+        return Err(
+            "este app foi aberto por um script; atualize rodando o instalador de novo".into(),
+        );
+    }
     let dir = exe
         .parent()
         .ok_or("não achei a pasta do app")?

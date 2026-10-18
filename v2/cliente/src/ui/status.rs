@@ -44,10 +44,15 @@ impl Sub {
         }
         if let Some(a) = atividade {
             if let Some(j) = &a.jogo {
+                let texto = if let Some(d) = j.desde.map(crate::ui::painel::tempo_de_jogo) {
+                    format!("{} · há {d}", j.nome)
+                } else {
+                    j.nome.clone()
+                };
                 return Self {
                     icone: Some(Icone::Jogo),
                     emoji: String::new(),
-                    texto: j.nome.clone(),
+                    texto,
                 };
             }
             if let Some(m) = &a.musica {
@@ -88,7 +93,11 @@ pub fn sub_widget<'a>(sub: &Sub, tamanho: f32, cor: Color) -> Element<'a, Msg> {
             );
         }
         None if !sub.emoji.is_empty() => {
-            r = r.push(text(sub.emoji.clone()).size(tamanho));
+            r = r.push(
+                text(sub.emoji.clone())
+                    .size(tamanho)
+                    .font(crate::tema::FONTE_EMOJI),
+            );
         }
         None => {}
     }

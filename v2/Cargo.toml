@@ -3,7 +3,7 @@
 # `concord-audio` tem que sair na mesma pasta do app que o chama.
 [workspace]
 resolver = "3"
-members = ["cliente", "concord-audio"]
+members = ["cliente", "concord-audio", "prototipo-tela"]
 
 [profile.dev.package."*"]
 # Dependências otimizadas mesmo no build de desenvolvimento: codificar vídeo e

@@ -84,50 +84,97 @@ impl Atalhos {
             .find(|(id, _, _)| *id != exceto && self.combo(id).eq_ignore_ascii_case(combo))
             .map(|(id, _, _)| *id)
     }
+
+    /// Retorna a ação correspondente a uma combinação exata (para disparar em foco).
+    pub fn acao_de_combo(&self, combo: &str) -> Option<&'static str> {
+        ACOES
+            .iter()
+            .find(|(id, _, _)| self.combo(id).eq_ignore_ascii_case(combo))
+            .map(|(id, _, _)| *id)
+    }
+
+    /// Ação a disparar com a janela em foco. Fica de fora o PTT (apertar e
+    /// soltar usam a tecla do `ptt.json`) e a tecla de texto sozinha: com o
+    /// padrão "V", digitar V no chat ou no Wordle virava atalho.
+    pub fn acao_na_janela(&self, combo: &str) -> Option<&'static str> {
+        if !combo.contains(" + ") && combo.chars().count() == 1 {
+            return None;
+        }
+        self.acao_de_combo(combo).filter(|a| *a != "ptt")
+    }
 }
 
-/// "Ctrl + Shift + M" a partir de uma tecla com modificadores. `None` para
-/// tecla que sozinha não serve (só um modificador apertado).
-pub fn combo_de_evento(
+/// "Ctrl + Shift + M" a partir de uma tecla com modificadores e código físico.
+pub fn combo_de_evento_completo(
     key: &iced::keyboard::Key,
+    physical: Option<&iced::keyboard::key::Physical>,
     mods: iced::keyboard::Modifiers,
 ) -> Option<String> {
     use iced::keyboard::Key;
-    use iced::keyboard::key::Named;
-    let nome = match key {
-        Key::Character(c) => {
-            let c = c.as_str();
-            if c.chars().count() != 1 {
-                return None;
-            }
-            c.to_uppercase()
+    use iced::keyboard::key::{Code, Named, Physical};
+
+    let nome_fisico = if let Some(Physical::Code(code)) = physical {
+        match code {
+            Code::NumLock => Some("NumLock".to_string()),
+            Code::ScrollLock => Some("ScrollLock".to_string()),
+            Code::Numpad0 => Some("Numpad 0".to_string()),
+            Code::Numpad1 => Some("Numpad 1".to_string()),
+            Code::Numpad2 => Some("Numpad 2".to_string()),
+            Code::Numpad3 => Some("Numpad 3".to_string()),
+            Code::Numpad4 => Some("Numpad 4".to_string()),
+            Code::Numpad5 => Some("Numpad 5".to_string()),
+            Code::Numpad6 => Some("Numpad 6".to_string()),
+            Code::Numpad7 => Some("Numpad 7".to_string()),
+            Code::Numpad8 => Some("Numpad 8".to_string()),
+            Code::Numpad9 => Some("Numpad 9".to_string()),
+            Code::NumpadDecimal => Some("Numpad .".to_string()),
+            Code::NumpadEnter => Some("Numpad Enter".to_string()),
+            _ => None,
         }
-        Key::Named(n) => match n {
-            Named::Space => "Espaço".to_string(),
-            Named::Enter => "Enter".to_string(),
-            Named::Tab => "Tab".to_string(),
-            Named::Backspace => "Backspace".to_string(),
-            Named::Delete => "Delete".to_string(),
-            Named::Home => "Home".to_string(),
-            Named::End => "End".to_string(),
-            Named::PageUp => "PageUp".to_string(),
-            Named::PageDown => "PageDown".to_string(),
-            Named::F1 => "F1".into(),
-            Named::F2 => "F2".into(),
-            Named::F3 => "F3".into(),
-            Named::F4 => "F4".into(),
-            Named::F5 => "F5".into(),
-            Named::F6 => "F6".into(),
-            Named::F7 => "F7".into(),
-            Named::F8 => "F8".into(),
-            Named::F9 => "F9".into(),
-            Named::F10 => "F10".into(),
-            Named::F11 => "F11".into(),
-            Named::F12 => "F12".into(),
+    } else {
+        None
+    };
+
+    let nome = match nome_fisico {
+        Some(n) => n,
+        None => match key {
+            Key::Character(c) => {
+                let c = c.as_str();
+                if c.chars().count() != 1 {
+                    return None;
+                }
+                c.to_uppercase()
+            }
+            Key::Named(n) => match n {
+                Named::Space => "Espaço".to_string(),
+                Named::Enter => "Enter".to_string(),
+                Named::Tab => "Tab".to_string(),
+                Named::Backspace => "Backspace".to_string(),
+                Named::Delete => "Delete".to_string(),
+                Named::Home => "Home".to_string(),
+                Named::End => "End".to_string(),
+                Named::PageUp => "PageUp".to_string(),
+                Named::PageDown => "PageDown".to_string(),
+                Named::F1 => "F1".into(),
+                Named::F2 => "F2".into(),
+                Named::F3 => "F3".into(),
+                Named::F4 => "F4".into(),
+                Named::F5 => "F5".into(),
+                Named::F6 => "F6".into(),
+                Named::F7 => "F7".into(),
+                Named::F8 => "F8".into(),
+                Named::F9 => "F9".into(),
+                Named::F10 => "F10".into(),
+                Named::F11 => "F11".into(),
+                Named::F12 => "F12".into(),
+                Named::NumLock | Named::Clear => "NumLock".into(),
+                Named::ScrollLock => "ScrollLock".into(),
+                _ => return None,
+            },
             _ => return None,
         },
-        _ => return None,
     };
+
     let mut partes: Vec<String> = Vec::new();
     if mods.control() {
         partes.push("Ctrl".into());
@@ -145,6 +192,16 @@ pub fn combo_de_evento(
     Some(partes.join(" + "))
 }
 
+/// "Ctrl + Shift + M" a partir de uma tecla com modificadores. `None` para
+/// tecla que sozinha não serve (só um modificador apertado).
+#[allow(dead_code)]
+pub fn combo_de_evento(
+    key: &iced::keyboard::Key,
+    mods: iced::keyboard::Modifiers,
+) -> Option<String> {
+    combo_de_evento_completo(key, None, mods)
+}
+
 /// "Ctrl + Shift + M" → "CTRL+SHIFT+m" (o gatilho preferido do portal).
 pub fn para_portal(combo: &str) -> String {
     combo
@@ -156,6 +213,20 @@ pub fn para_portal(combo: &str) -> String {
             "Super" => "LOGO".to_string(),
             "Espaço" => "space".to_string(),
             "Enter" => "Return".to_string(),
+            "NumLock" => "Num_Lock".to_string(),
+            "ScrollLock" => "Scroll_Lock".to_string(),
+            "Numpad 0" => "KP_0".to_string(),
+            "Numpad 1" => "KP_1".to_string(),
+            "Numpad 2" => "KP_2".to_string(),
+            "Numpad 3" => "KP_3".to_string(),
+            "Numpad 4" => "KP_4".to_string(),
+            "Numpad 5" => "KP_5".to_string(),
+            "Numpad 6" => "KP_6".to_string(),
+            "Numpad 7" => "KP_7".to_string(),
+            "Numpad 8" => "KP_8".to_string(),
+            "Numpad 9" => "KP_9".to_string(),
+            "Numpad ." => "KP_Decimal".to_string(),
+            "Numpad Enter" => "KP_Enter".to_string(),
             x if x.chars().count() == 1 => x.to_lowercase(),
             x => x.to_string(),
         })
@@ -181,6 +252,20 @@ pub fn para_hyprland(combo: &str) -> String {
     let tecla = match *teclas {
         "Espaço" => "SPACE".to_string(),
         "Enter" => "RETURN".to_string(),
+        "NumLock" => "Num_Lock".to_string(),
+        "ScrollLock" => "Scroll_Lock".to_string(),
+        "Numpad 0" => "KP_0".to_string(),
+        "Numpad 1" => "KP_1".to_string(),
+        "Numpad 2" => "KP_2".to_string(),
+        "Numpad 3" => "KP_3".to_string(),
+        "Numpad 4" => "KP_4".to_string(),
+        "Numpad 5" => "KP_5".to_string(),
+        "Numpad 6" => "KP_6".to_string(),
+        "Numpad 7" => "KP_7".to_string(),
+        "Numpad 8" => "KP_8".to_string(),
+        "Numpad 9" => "KP_9".to_string(),
+        "Numpad ." => "KP_Decimal".to_string(),
+        "Numpad Enter" => "KP_Enter".to_string(),
         t if t.chars().count() == 1 => t.to_uppercase(),
         t => t.to_string(),
     };
@@ -229,8 +314,10 @@ mod testes {
     fn formatos_do_portal_e_do_hyprland() {
         assert_eq!(para_portal("Ctrl + Shift + M"), "CTRL+SHIFT+m");
         assert_eq!(para_portal("Ctrl + Enter"), "CTRL+Return");
+        assert_eq!(para_portal("NumLock"), "Num_Lock");
         assert_eq!(para_hyprland("Ctrl + Shift + M"), "CTRL SHIFT, M");
         assert_eq!(para_hyprland("V"), ", V");
+        assert_eq!(para_hyprland("NumLock"), ", Num_Lock");
         assert_eq!(
             linha_hyprland("mute", "Ctrl + Shift + M"),
             "bind = CTRL SHIFT, M, global, lincast-chat:mute"
@@ -251,5 +338,26 @@ mod testes {
         );
         a.restaura("mute");
         assert_eq!(a.combo("mute"), "Ctrl + Shift + M");
+    }
+
+    #[test]
+    fn teclas_normais_nao_sao_atalhos() {
+        let a = Atalhos::default();
+        assert_eq!(a.acao_de_combo("A"), None);
+        assert_eq!(a.acao_de_combo("Z"), None);
+        assert_eq!(a.acao_de_combo("Enter"), None);
+        assert_eq!(a.acao_de_combo("Backspace"), None);
+        assert_eq!(a.acao_de_combo("Space"), None);
+        assert_eq!(a.acao_de_combo("Ctrl + Shift + M"), Some("mute"));
+    }
+
+    #[test]
+    fn letra_sozinha_e_ptt_nao_disparam_na_janela() {
+        let a = Atalhos::default();
+        // "V" é o PTT padrão: dentro da janela tem que chegar ao chat/Wordle.
+        assert_eq!(a.acao_de_combo("V"), Some("ptt"));
+        assert_eq!(a.acao_na_janela("V"), None);
+        assert_eq!(a.acao_na_janela("Ctrl + Shift + M"), Some("mute"));
+        assert_eq!(a.acao_na_janela("Ctrl + Enter"), Some("answer"));
     }
 }

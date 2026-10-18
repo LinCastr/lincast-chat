@@ -77,12 +77,12 @@ fn capa<'a>(j: &'a JogoLista) -> Element<'a, Msg> {
             .width(LARG)
             .height(ALT)
             .content_fit(ContentFit::Cover)
-            .border_radius(tema::RAIO)
+            .border_radius(tema::RAIO_GRANDE)
             .into(),
-        None => container(text(j.nome.as_str()).size(10).center())
+        None => container(text(j.nome.as_str()).size(11).font(negrito()).center())
             .width(LARG)
             .height(ALT)
-            .padding(4)
+            .padding(6)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .style(move |_| container::Style {
@@ -90,7 +90,7 @@ fn capa<'a>(j: &'a JogoLista) -> Element<'a, Msg> {
                 border: Border {
                     color: c.borda,
                     width: 1.0,
-                    radius: tema::RAIO.into(),
+                    radius: tema::RAIO_GRANDE.into(),
                 },
                 ..Default::default()
             })
@@ -100,17 +100,18 @@ fn capa<'a>(j: &'a JogoLista) -> Element<'a, Msg> {
 
 fn tile<'a>(j: &'a JogoLista, lista: ListaJogo, editavel: bool) -> Element<'a, Msg> {
     let c = tema::cores();
-    let base = column![
-        capa(j),
-        text(j.nome.as_str())
-            .size(11)
-            .width(LARG)
-            .style(fraco)
-            .wrapping(text::Wrapping::None)
-    ]
-    .spacing(4)
-    .width(LARG);
-    let corpo: Element<'a, Msg> = if editavel {
+    let capa_el = capa(j);
+    let capa_com_dica: Element<'a, Msg> = iced::widget::tooltip(
+        capa_el,
+        container(text(j.nome.as_str()).size(12).font(negrito()))
+            .padding([5, 9])
+            .style(tema::dica),
+        iced::widget::tooltip::Position::Top,
+    )
+    .gap(6)
+    .into();
+
+    if editavel {
         let x = button(ico(icones::fechar(), 12.0, iced::Color::WHITE))
             .padding(3)
             .style(move |_, st| button::Style {
@@ -118,7 +119,7 @@ fn tile<'a>(j: &'a JogoLista, lista: ListaJogo, editavel: bool) -> Element<'a, M
                     if matches!(st, button::Status::Hovered) {
                         c.perigo
                     } else {
-                        iced::Color::from_rgba(0.0, 0.0, 0.0, 0.65)
+                        iced::Color::from_rgba(0.0, 0.0, 0.0, 0.75)
                     },
                 )),
                 border: Border {
@@ -129,14 +130,13 @@ fn tile<'a>(j: &'a JogoLista, lista: ListaJogo, editavel: bool) -> Element<'a, M
             })
             .on_press(Msg::JogoRemove(lista, j.id));
         stack![
-            base,
+            capa_com_dica,
             container(x).width(LARG).align_x(Alignment::End).padding(3)
         ]
         .into()
     } else {
-        base.into()
-    };
-    corpo
+        capa_com_dica
+    }
 }
 
 fn secao<'a>(
@@ -155,32 +155,52 @@ fn secao<'a>(
                 .style(fraco),
         );
     }
-    let mut col = column![cab].spacing(8);
+    let mut col = column![cab].spacing(10);
     if jogos.is_empty() {
         col = col.push(text(vazio).size(12).style(fraco));
     } else {
-        let mut linha = Row::new().spacing(8);
+        let mut linha = Row::new().spacing(10);
         for j in jogos {
             linha = linha.push(tile(j, lista, editavel));
         }
-        col = col.push(linha.wrap().vertical_spacing(10));
+        col = col.push(linha.wrap().vertical_spacing(12));
     }
     col.into()
 }
 
 /// As três listas, para ver (perfil de alguém) ou editar (o meu).
 pub fn blocos<'a>(listas: &'a ListasJogos, editavel: bool) -> Element<'a, Msg> {
-    let mut col = Column::new().spacing(16);
+    let c = tema::cores();
+    let mut col = Column::new().spacing(18);
     let fav_el: Element<'a, Msg> = match &listas.favorito {
         Some(j) => {
-            let mut linha = Row::new();
-            linha = linha.push(tile(j, ListaJogo::Favorito, editavel));
-            column![
-                text(ListaJogo::Favorito.titulo()).size(13).font(negrito()),
-                linha
+            let mut info = column![
+                text("Jogo favorito").size(12).style(fraco),
+                text(j.nome.as_str()).size(16).font(negrito()),
             ]
-            .spacing(8)
-            .into()
+            .spacing(4)
+            .width(Length::Fill);
+            if editavel {
+                info = info.push(
+                    button(text("Remover dos favoritos").size(11))
+                        .padding([4, 8])
+                        .style(tema::botao_secundario)
+                        .on_press(Msg::JogoRemove(ListaJogo::Favorito, j.id)),
+                );
+            }
+            container(row![capa(j), info,].spacing(14).align_y(Alignment::Center))
+                .padding(12)
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(c.elevado)),
+                    border: Border {
+                        color: c.borda,
+                        width: 1.0,
+                        radius: tema::RAIO_GRANDE.into(),
+                    },
+                    ..Default::default()
+                })
+                .into()
         }
         None => column![
             text(ListaJogo::Favorito.titulo()).size(13).font(negrito()),

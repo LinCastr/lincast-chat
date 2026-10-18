@@ -2,6 +2,16 @@
 
 use super::*;
 
+fn sub_sala(entrada: sala::Entrada) -> Subscription<Msg> {
+    let id = entrada.sala.clone();
+    Subscription::run_with(entrada, |e| {
+        let e = e.clone();
+        iced::stream::channel(256, async move |saida| sala::roda(e, saida).await)
+    })
+    .with(id)
+    .map(|(id, ev)| Msg::SalaDe(id, ev))
+}
+
 impl App {
     pub(crate) fn subscription(&self) -> Subscription<Msg> {
         let sub_atividade =
@@ -18,11 +28,7 @@ impl App {
                 }
             }
             Tela::Sala(s) => {
-                let sub_sala = Subscription::run_with(s.entrada.clone(), |e| {
-                    let e = e.clone();
-                    iced::stream::channel(256, async move |saida| sala::roda(e, saida).await)
-                })
-                .map(Msg::Sala);
+                let sub_sala = sub_sala(s.entrada.clone());
 
                 let sub_tick = iced::time::every(std::time::Duration::from_millis(500))
                     .map(|_| Msg::TickDigitando);
@@ -104,6 +110,9 @@ impl App {
             sub_presenca,
             sub_toast,
         ];
+        if let Some(c) = &self.chamada_ativa {
+            subs.push(sub_sala(c.entrada.clone()));
+        }
         // Toque tocando: a barra de 30s e o pulso precisam de redesenho.
         if !self.avisos.toques.is_empty() {
             subs.push(
@@ -153,7 +162,7 @@ impl App {
             }));
         }
         // Cronômetro da coluna: redesenha uma vez por segundo durante a chamada.
-        if matches!(&self.tela, Tela::Sala(s) if s.na_chamada) {
+        if self.em_chamada() {
             subs.push(
                 iced::time::every(std::time::Duration::from_secs(1)).map(|_| Msg::TickChamada),
             );
@@ -650,22 +659,23 @@ impl App {
             .and_then(|e| e.perfil.as_ref())
             .and_then(|p| p.status.as_deref())
             .unwrap_or("online");
-        let (ativa, amigos_aberto, chamada, mudo, surdo) = match &self.tela {
-            Tela::Sala(s) => (
-                Some(s.entrada.sala.as_str()),
-                false,
-                s.na_chamada.then(|| ChamadaLocal {
-                    titulo: &s.titulo,
-                    desde: s.chamada_desde,
-                    com_camera: s.com_camera,
-                    apresentando: s.apresentando,
-                    som_aberto: s.painel == Some(PainelFlutuante::Sons),
-                }),
-                Some(s.mudo),
-                Some(s.surdo),
-            ),
-            Tela::Salas(s) => (None, s.aba == AbaSalas::Amigos, None, None, None),
-            _ => (None, false, None, None, None),
+        let sala_chamada: Option<&SalaAberta> = match &self.tela {
+            Tela::Sala(s) if s.na_chamada => Some(s.as_ref()),
+            _ => self.chamada_ativa.as_deref(),
+        };
+        let chamada = sala_chamada.map(|s| ChamadaLocal {
+            titulo: &s.titulo,
+            desde: s.chamada_desde,
+            com_camera: s.com_camera,
+            apresentando: s.apresentando,
+            som_aberto: s.painel == Some(PainelFlutuante::Sons),
+        });
+        let mudo = sala_chamada.map(|s| s.mudo);
+        let surdo = sala_chamada.map(|s| s.surdo);
+        let (ativa, amigos_aberto) = match &self.tela {
+            Tela::Sala(s) => (Some(s.entrada.sala.as_str()), false),
+            Tela::Salas(s) => (None, s.aba == AbaSalas::Amigos),
+            _ => (None, false),
         };
         ui::coluna::coluna(&ContextoColuna {
             eu: self.eu.as_ref(),
@@ -811,11 +821,6 @@ impl App {
                     .as_ref()
                     .and_then(|e| e.usuario.as_deref())
                     .unwrap_or(""),
-                eh_local: self
-                    .eu
-                    .as_ref()
-                    .map(|e| e.tipo.as_deref() == Some("local") || e.usuario.is_some())
-                    .unwrap_or(true),
                 avatar_url: self.eu.as_ref().and_then(|e| e.avatar.as_deref()),
                 banner_url: self.eu.as_ref().and_then(|e| e.banner_url.as_deref()),
                 uid: self.avisos.meu_uid().unwrap_or(""),
@@ -824,6 +829,11 @@ impl App {
                 jogos_reg: &self.jogos_reg,
                 jogos_reg_filtro: &self.jogos_reg_filtro,
                 processos_abertos: &self.processos_abertos,
+                jogos_reg_renomeando: self
+                    .jogos_reg_renomeando
+                    .as_ref()
+                    .map(|(e, n)| (e.as_str(), n.as_str())),
+                jogos_reg_seletor_aberto: self.jogos_reg_seletor_aberto,
                 atualizacao_status: self.atualizacao_status.as_deref(),
                 atualizando: self.atualizando,
                 volume_mic: self.volume_mic,
@@ -1128,6 +1138,16 @@ impl App {
                 .unwrap_or(false);
             tela_final =
                 iced::widget::stack![tela_final, ui::toque::modal(t, destino, foto, pulso)].into();
+        }
+
+        if let Some(j) = &self.modal_visao_jogo {
+            tela_final =
+                iced::widget::stack![tela_final, ui::configuracoes::modal_visao_jogo(j)].into();
+        }
+
+        if let Some(f) = &self.modal_foto {
+            tela_final =
+                iced::widget::stack![tela_final, ui::perfil::modal_visualizador_foto(f)].into();
         }
 
         tela_final

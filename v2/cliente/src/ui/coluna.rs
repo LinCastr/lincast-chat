@@ -366,9 +366,11 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
     let nome = ctx.eu.map(|e| e.name.as_str()).unwrap_or("");
     let usuario = ctx.eu.and_then(|e| e.usuario.as_deref());
     let id = row![
+        // Mesma chave (uid) de todo o resto, senão a cor de fundo do avatar
+        // sem foto saía diferente aqui e no chat.
         ui::avatar::avatar(
             ctx.eu.and_then(|e| e.avatar.as_deref()),
-            usuario.unwrap_or(nome),
+            ctx.avisos.meu_uid().or(usuario).unwrap_or(nome),
             nome,
             32.0,
             Some(ctx.status),

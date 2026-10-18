@@ -25,6 +25,14 @@ pub struct DispositivoCamera {
 }
 
 /// Lista todas as câmeras de captura de vídeo presentes no sistema.
+/// O V4L costuma dar "Modelo: Modelo"; fica só "Modelo".
+fn nome_sem_repeticao(n: &str) -> String {
+    match n.split_once(": ") {
+        Some((a, b)) if a.trim() == b.trim() => a.trim().to_string(),
+        _ => n.to_string(),
+    }
+}
+
 pub fn lista_cameras() -> Vec<DispositivoCamera> {
     let mut lista = Vec::new();
     for node in context::enum_devices() {
@@ -36,6 +44,7 @@ pub fn lista_cameras() -> Vec<DispositivoCamera> {
         {
             let nome = node
                 .name()
+                .map(|n| nome_sem_repeticao(&n))
                 .unwrap_or_else(|| format!("Câmera {}", node.index()));
             let caminho = node.path().to_string_lossy().to_string();
             lista.push(DispositivoCamera {

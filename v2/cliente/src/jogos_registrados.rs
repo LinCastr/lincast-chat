@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{JogoAtividade, JogoLista};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JogoRegistrado {
     /// Nome exibido (o oficial, quando houve correspondência).
     pub nome: String,
@@ -31,6 +35,23 @@ pub struct JogoRegistrado {
     /// Já tentamos achar o nome oficial e a capa.
     #[serde(default)]
     pub procurado: bool,
+    /// Se está ativo para detecção e exibição no perfil.
+    #[serde(default = "default_true")]
+    pub ativo: bool,
+}
+
+impl Default for JogoRegistrado {
+    fn default() -> Self {
+        Self {
+            nome: String::new(),
+            exec: None,
+            manual: false,
+            ultimo: 0,
+            capa: None,
+            procurado: false,
+            ativo: true,
+        }
+    }
 }
 
 fn caminho() -> Option<PathBuf> {
@@ -115,7 +136,15 @@ pub fn melhor_parecido<'a>(nome: &str, candidatos: &'a [JogoLista]) -> Option<&'
 
 /// "my_game-x64.exe" → "My Game X64".
 pub fn nome_sugerido(exec: &str) -> String {
-    let limpo = exec.strip_suffix(".exe").unwrap_or(exec);
+    let limpo = exec
+        .strip_suffix(".exe")
+        .or_else(|| exec.strip_suffix(".appimage"))
+        .or_else(|| exec.strip_suffix(".AppImage"))
+        .unwrap_or(exec);
+    let limpo = limpo
+        .strip_suffix("-x86_64")
+        .or_else(|| limpo.strip_suffix(".x86_64"))
+        .unwrap_or(limpo);
     limpo
         .split(['_', '-', '.'])
         .filter(|p| !p.is_empty())
@@ -155,6 +184,19 @@ pub fn processos_abertos() -> Vec<String> {
         {
             continue;
         }
+        // Se o processo foi lançado via AppImage, extrai o nome do arquivo original
+        if let Ok(environ) = fs::read(format!("{p}/environ")) {
+            for entry in environ.split(|&b| b == 0) {
+                if let Ok(s) = std::str::from_utf8(entry)
+                    && let Some(caminho) = s.strip_prefix("APPIMAGE=")
+                {
+                    let ai_base = caminho.rsplit('/').next().unwrap_or("").to_lowercase();
+                    if !ai_base.is_empty() {
+                        vistos.insert(ai_base);
+                    }
+                }
+            }
+        }
         let Ok(cmd) = fs::read(format!("{p}/cmdline")) else {
             continue;
         };
@@ -192,7 +234,7 @@ pub fn enriquece(jogo: &mut JogoAtividade) {
     let lista = carrega();
     if let Some(r) = lista
         .iter()
-        .filter(|r| r.capa.is_some() || r.manual)
+        .filter(|r| r.ativo && (r.capa.is_some() || r.manual))
         .map(|r| (similaridade(&jogo.nome, &r.nome), r))
         .filter(|(s, _)| *s >= 0.85)
         .max_by(|a, b| a.0.total_cmp(&b.0))
@@ -222,6 +264,7 @@ pub fn registra_visto(jogo: &JogoAtividade) {
         ultimo: agora,
         capa: jogo.capa,
         procurado: jogo.capa.is_some(),
+        ativo: true,
     });
     salva(&lista);
 }
@@ -259,8 +302,41 @@ pub fn adiciona_manual(exec: &str, nome: String, capa: Option<u64>) {
         ultimo: 0,
         capa,
         procurado: true,
+        ativo: true,
     });
     salva(&lista);
+}
+
+/// Renomeia um jogo registrado e opcionalmente associa uma capa encontrada.
+pub fn renomeia(exec: &str, novo_nome: String, capa: Option<u64>) {
+    let mut lista = carrega();
+    if let Some(r) = lista
+        .iter_mut()
+        .find(|r| r.exec.as_deref() == Some(exec) || chave(&r.nome) == chave(exec))
+    {
+        r.nome = novo_nome;
+        r.capa = capa;
+        r.procurado = capa.is_some();
+        salva(&lista);
+    }
+}
+
+/// O jogo com esse nome foi desligado pela pessoa.
+pub fn desativado(nome: &str) -> bool {
+    let k = chave(nome);
+    carrega().iter().any(|r| !r.ativo && chave(&r.nome) == k)
+}
+
+/// Alterna o estado ativo de um jogo para exibição/detecção.
+pub fn alterna_ativo(exec_ou_nome: &str) {
+    let mut lista = carrega();
+    if let Some(r) = lista
+        .iter_mut()
+        .find(|r| r.exec.as_deref() == Some(exec_ou_nome) || chave(&r.nome) == chave(exec_ou_nome))
+    {
+        r.ativo = !r.ativo;
+        salva(&lista);
+    }
 }
 
 pub fn remove(nome: &str) {

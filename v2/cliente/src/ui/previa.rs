@@ -137,7 +137,7 @@ pub fn previa<'a>(d: DadosPrevia<'a>) -> Element<'a, Msg> {
 
     let alvo = d.usuario.unwrap_or(d.nome).to_string();
     let mut acoes = row![botao_acao(
-        "Ver perfil completo",
+        "Ver perfil",
         Msg::MenuFaz(Box::new(Msg::AbrePerfilUsuario(alvo))),
         false,
     )]

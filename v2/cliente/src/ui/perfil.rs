@@ -1,6 +1,8 @@
 //! Módulo de perfil próprio e visualização de perfis alheios (S5).
 
-use iced::widget::{button, column, container, image, row, space, stack, svg, text, text_input};
+use iced::widget::{
+    button, column, container, image, row, scrollable, space, stack, svg, text, text_input,
+};
 use iced::{Alignment, Color, ContentFit, Element, Length};
 
 use crate::api::{CartaoPerfil, PerfilCompleto};
@@ -157,7 +159,21 @@ pub fn modal_perfil_usuario<'a>(
             })
             .into(),
     };
-    let avatar_grande = container(crate::ui::avatar::avatar(
+    let banner_clicavel: Element<'a, Msg> =
+        if let Some(url) = cartao.banner_url.as_ref().filter(|u| !u.trim().is_empty()) {
+            button(fundo_banner)
+                .padding(0)
+                .style(|_, _| button::Style::default())
+                .on_press(Msg::AbreFoto {
+                    url: url.clone(),
+                    titulo: format!("Banner de {}", cartao.name),
+                })
+                .into()
+        } else {
+            fundo_banner
+        };
+
+    let avatar_base = container(crate::ui::avatar::avatar(
         cartao.avatar.as_deref(),
         &cartao.uid,
         &cartao.name,
@@ -174,9 +190,24 @@ pub fn modal_perfil_usuario<'a>(
         },
         ..Default::default()
     });
+
+    let avatar_clicavel: Element<'a, Msg> =
+        if let Some(url) = cartao.avatar.as_ref().filter(|u| !u.trim().is_empty()) {
+            button(avatar_base)
+                .padding(0)
+                .style(|_, _| button::Style::default())
+                .on_press(Msg::AbreFoto {
+                    url: url.clone(),
+                    titulo: format!("Avatar de {}", cartao.name),
+                })
+                .into()
+        } else {
+            avatar_base.into()
+        };
+
     let topo = stack![
-        column![fundo_banner, space().height(52)],
-        container(avatar_grande).padding(iced::Padding {
+        column![banner_clicavel, space().height(52)],
+        container(avatar_clicavel).padding(iced::Padding {
             top: 98.0,
             left: 20.0,
             ..Default::default()
@@ -446,7 +477,14 @@ pub fn modal_perfil_usuario<'a>(
     let corpo = row![
         esquerda,
         container(
-            iced::widget::scrollable(container(direita).padding([16, 20])).height(Length::Fill)
+            // Topo com espaço para o X (antes ele ficava em cima do primeiro cartão).
+            iced::widget::scrollable(container(direita).padding(iced::Padding {
+                top: 52.0,
+                right: 20.0,
+                bottom: 16.0,
+                left: 20.0,
+            }))
+            .height(Length::Fill)
         )
         .width(Length::Fill)
         .height(Length::Fill),
@@ -798,6 +836,94 @@ pub fn modal_editar_meu_perfil<'a>(
         .into()
 }
 
+/// Visualizador de fotos (avatar/banner) em tela cheia com zoom interativo.
+pub fn modal_visualizador_foto<'a>(foto: &'a crate::estado::ModalFoto) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let img_elem: Element<'a, Msg> = match crate::avatar::handle_exibicao(&foto.url) {
+        Some(h) => {
+            let dim = (460.0 * foto.zoom).max(100.0);
+            image(h)
+                .width(dim)
+                .height(dim)
+                .content_fit(ContentFit::Contain)
+                .into()
+        }
+        None => container(
+            column![
+                crate::ui::efeitos::ico(icones::imagem(), 32.0, c.texto_fraco),
+                text("Carregando imagem…").size(13).style(fraco),
+            ]
+            .spacing(8)
+            .align_x(Alignment::Center),
+        )
+        .padding(40)
+        .into(),
+    };
+
+    let barra_topo = row![
+        text(&foto.titulo).size(14).font(negrito()),
+        space().width(Length::Fill),
+        button(text("-").size(14).font(negrito()))
+            .padding([4, 10])
+            .style(tema::botao_secundario)
+            .on_press(Msg::ZoomFoto(-0.25)),
+        text(format!("{}%", (foto.zoom * 100.0).round() as u32))
+            .size(12)
+            .style(fraco),
+        button(text("+").size(14).font(negrito()))
+            .padding([4, 10])
+            .style(tema::botao_secundario)
+            .on_press(Msg::ZoomFoto(0.25)),
+        button(text("100%").size(12))
+            .padding([4, 8])
+            .style(tema::botao_secundario)
+            .on_press(Msg::ResetaZoomFoto),
+        space().width(12),
+        button(
+            svg(icones::fechar())
+                .width(16)
+                .height(16)
+                .style(tema::icone_cor(c.texto_fraco)),
+        )
+        .padding(6)
+        .style(tema::botao_secundario)
+        .on_press(Msg::FechaFoto),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let conteudo = container(
+        column![
+            barra_topo,
+            container(scrollable(
+                container(img_elem)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .padding(12),
+        ]
+        .spacing(10)
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(iced::Background::Color(Color::from_rgba(
+            0.0, 0.0, 0.0, 0.88,
+        ))),
+        ..Default::default()
+    });
+
+    conteudo.into()
+}
+
 /// Editor do próprio perfil (print 4): controles à esquerda e, à direita, a
 /// prévia do cartão — foto e banner clicáveis (menu mudar/remover), status
 /// personalizado e as abas Mural/Atividade.
@@ -807,7 +933,11 @@ pub fn editor_perfil<'a>(
 ) -> Element<'a, Msg> {
     use crate::ui::efeitos::ico;
     let c = tema::cores();
-    let cor_banner = tema::cor_de_avatar(ctx.uid);
+    let cor_banner = ed
+        .cor
+        .as_deref()
+        .and_then(parse_hex_color)
+        .unwrap_or_else(|| tema::cor_de_avatar(ctx.uid));
     let banner_el: Element<'a, Msg> = match ctx.banner_url.and_then(crate::avatar::handle_exibicao)
     {
         Some(h) => iced::widget::image(h)
@@ -857,7 +987,9 @@ pub fn editor_perfil<'a>(
     .on_press(Msg::AbreMenuMidia(true));
     let bolha = button(match ctx.status_custom.filter(|s| !s.vencido()) {
         Some(sc) => row![
-            text(sc.emoji.clone()).size(13),
+            text(sc.emoji.clone())
+                .size(13)
+                .font(crate::tema::FONTE_EMOJI),
             text(sc.texto.clone()).size(12)
         ]
         .spacing(6)
@@ -940,21 +1072,27 @@ pub fn editor_perfil<'a>(
                 .size(tema::TEXTO_ROTULO)
                 .font(negrito())
                 .style(fraco),
-            text_input("Uma frase sobre você…", &ed.bio)
-                .on_input(Msg::RascunhoBioPerfil)
-                .padding([6, 10])
-                .size(13)
-                .style(tema::campo),
+            text(if ed.bio.trim().is_empty() {
+                "Nenhuma biografia definida."
+            } else {
+                &ed.bio
+            })
+            .size(13)
+            .style(fraco),
         ]
         .spacing(6)
         .into()
     };
+    let mut nome_card = text(ed.nome.clone()).size(22).font(negrito());
+    if let Some(cor_custom) = ed.cor.as_deref().and_then(parse_hex_color) {
+        nome_card = nome_card.color(cor_custom);
+    }
     let cartao = container(
         column![
             topo,
             container(
                 column![
-                    text(ed.nome.clone()).size(22).font(negrito()),
+                    nome_card,
                     text(format!("@{}", ctx.usuario)).size(13).style(fraco),
                     row![
                         aba("Mural", !ed.previa_atividade, false),
@@ -1006,6 +1144,31 @@ pub fn editor_perfil<'a>(
             .on_press(Msg::EscolheCorPerfil(hex.to_string())),
         );
     }
+
+    let cor_hex_digitada = ed.cor.clone().unwrap_or_default();
+    let preview_cor_hex = parse_hex_color(&cor_hex_digitada).unwrap_or(Color::TRANSPARENT);
+    let swatch = container(space().width(18).height(18)).style(move |_| container::Style {
+        background: Some(iced::Background::Color(preview_cor_hex)),
+        border: iced::Border {
+            color: c.borda,
+            width: 1.0,
+            radius: 9.0.into(),
+        },
+        ..Default::default()
+    });
+    let linha_hex = row![
+        text("Hex:").size(12).style(fraco),
+        text_input("#RRGGBB", &cor_hex_digitada)
+            .on_input(Msg::EscolheCorPerfil)
+            .width(90)
+            .padding([4, 8])
+            .size(12)
+            .style(tema::campo),
+        swatch,
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
     let mut controles = column![
         text("Conectado como @".to_string() + ctx.usuario)
             .size(12)
@@ -1019,14 +1182,64 @@ pub fn editor_perfil<'a>(
             .padding([6, 10])
             .size(13)
             .style(tema::campo),
-        text("COR DE DESTAQUE DO NOME")
+        text("BIOGRAFIA / SOBRE MIM")
+            .size(tema::TEXTO_ROTULO)
+            .font(negrito())
+            .style(fraco),
+        text_input("Uma frase curta sobre você…", &ed.bio)
+            .on_input(Msg::RascunhoBioPerfil)
+            .padding([6, 10])
+            .size(13)
+            .style(tema::campo),
+        text("COR DO PERFIL E NOME")
             .size(tema::TEXTO_ROTULO)
             .font(negrito())
             .style(fraco),
         paleta,
-        text("Clique na foto ou no banner da prévia para trocar ou remover.")
-            .size(12)
+        linha_hex,
+        text("FOTO DE PERFIL E BANNER")
+            .size(tema::TEXTO_ROTULO)
+            .font(negrito())
             .style(fraco),
+        {
+            let mut r = row![
+                button(text("Trocar avatar").size(12))
+                    .padding([5, 10])
+                    .style(tema::botao_secundario)
+                    .on_press(Msg::EscolheArquivoAvatar),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            if ctx.avatar_url.is_some() {
+                r = r.push(
+                    button(text("Remover").size(12))
+                        .padding([5, 8])
+                        .style(tema::botao_perigo)
+                        .on_press(Msg::RemoveAvatar),
+                );
+            }
+            r
+        },
+        {
+            let mut r = row![
+                button(text("Trocar banner").size(12))
+                    .padding([5, 10])
+                    .style(tema::botao_secundario)
+                    .on_press(Msg::EscolheArquivoBanner),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            if ctx.banner_url.is_some() {
+                r = r.push(
+                    button(text("Remover").size(12))
+                        .padding([5, 8])
+                        .style(tema::botao_perigo)
+                        .on_press(Msg::RemoveBanner),
+                );
+            }
+            r
+        },
+        space().height(4),
         button(
             text(if ed.salvando {
                 "Salvando…"

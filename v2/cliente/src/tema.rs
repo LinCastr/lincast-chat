@@ -87,7 +87,7 @@ pub const GRAFITE: Cores = Cores {
     elevado: rgb(0x2c2e35),
     borda: rgb(0x30323a),
     texto: rgb(0xe6e7ec),
-    texto_fraco: rgb(0x7a7e8c),
+    texto_fraco: rgb(0x9ca0b2),
     destaque: rgb(0x6f86f0),
     sobre_destaque: rgb(0xffffff),
     perigo: rgb(0xe0434b),
@@ -125,7 +125,7 @@ pub const DRACULA: Cores = Cores {
     elevado: rgb(0x343746),
     borda: rgb(0x44475a),
     texto: rgb(0xf8f8f2),
-    texto_fraco: rgb(0x6272a4),
+    texto_fraco: rgb(0x929dc2),
     destaque: rgb(0xbd93f9),
     sobre_destaque: rgb(0x21222c),
     perigo: rgb(0xff5555),
@@ -144,7 +144,7 @@ pub const TOKYO_NIGHT: Cores = Cores {
     elevado: rgb(0x24283b),
     borda: rgb(0x414868),
     texto: rgb(0xc0caf5),
-    texto_fraco: rgb(0x565f89),
+    texto_fraco: rgb(0x8690b6),
     destaque: rgb(0x7aa2f7),
     sobre_destaque: rgb(0x15161e),
     perigo: rgb(0xf7768e),
@@ -201,7 +201,7 @@ pub const ONE_DARK: Cores = Cores {
     elevado: rgb(0x353b45),
     borda: rgb(0x3e4451),
     texto: rgb(0xabb2bf),
-    texto_fraco: rgb(0x5c6370),
+    texto_fraco: rgb(0x8890a2),
     destaque: rgb(0x61afef),
     sobre_destaque: rgb(0x21252b),
     perigo: rgb(0xe06c75),
@@ -220,7 +220,7 @@ pub const MEIA_NOITE: Cores = Cores {
     elevado: rgb(0x16191f),
     borda: rgb(0x232730),
     texto: rgb(0xdce1eb),
-    texto_fraco: rgb(0x767f91),
+    texto_fraco: rgb(0x9aa2b4),
     destaque: rgb(0x6a86b8),
     sobre_destaque: rgb(0x08090b),
     perigo: rgb(0xe05561),
@@ -239,7 +239,7 @@ pub const CAFE: Cores = Cores {
     elevado: rgb(0x33271e),
     borda: rgb(0x4a3a2d),
     texto: rgb(0xede0d4),
-    texto_fraco: rgb(0x9c8a79),
+    texto_fraco: rgb(0xb5a392),
     destaque: rgb(0xd9a05b),
     sobre_destaque: rgb(0x1a140f),
     perigo: rgb(0xe05a47),
@@ -619,6 +619,37 @@ pub fn tema_iced() -> Theme {
 
 /// Fonte do app: Figtree, embutida (licença OFL em `assets/fonts`).
 pub const FONTE: iced::Font = iced::Font::with_name("Figtree");
+/// Emoji sempre com a Noto Color Emoji: no fallback automático a DejaVu Sans
+/// e a Font Awesome vêm antes e desenham boa parte dos emojis só em contorno.
+pub const FONTE_EMOJI: iced::Font = iced::Font::with_name("Noto Color Emoji");
+
+/// Caractere que pertence a um emoji (inclui junção, seletor de variação,
+/// tom de pele e keycap, para não quebrar a sequência no meio).
+pub fn eh_emoji(c: char) -> bool {
+    matches!(c as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2300..=0x23FF | 0x2B00..=0x2BFF
+        | 0x200D | 0xFE0F | 0x20E3 | 0xE0020..=0xE007F | 0x3030 | 0x303D | 0x3297 | 0x3299
+        | 0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x21AA)
+}
+
+/// Divide o texto em trechos `(é_emoji, trecho)`, na ordem.
+pub fn trechos_de_emoji(s: &str) -> Vec<(bool, &str)> {
+    let mut out: Vec<(bool, &str)> = Vec::new();
+    let mut ini = 0;
+    let mut atual: Option<bool> = None;
+    for (i, c) in s.char_indices() {
+        let e = eh_emoji(c);
+        if atual.is_some_and(|a| a != e) {
+            out.push((atual.unwrap_or(false), &s[ini..i]));
+            ini = i;
+        }
+        atual = Some(e);
+    }
+    if ini < s.len() {
+        out.push((atual.unwrap_or(false), &s[ini..]));
+    }
+    out
+}
 
 /// Raios do protótipo: 6px em botões e campos, 8px em cartões e janelas.
 pub const RAIO: f32 = 8.0;

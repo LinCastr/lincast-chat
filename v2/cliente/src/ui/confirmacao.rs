@@ -11,9 +11,17 @@ use crate::tema::Cores;
 /// Tipos de ação crítica que exigem confirmação do usuário.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TipoConfirmacao {
-    SairChamada { sala: String },
-    FecharAplicativo { sala: Option<String> },
-    ApagarGrupo { id: String, nome: String },
+    #[allow(dead_code)]
+    SairChamada {
+        sala: String,
+    },
+    FecharAplicativo {
+        sala: Option<String>,
+    },
+    ApagarGrupo {
+        id: String,
+        nome: String,
+    },
 }
 
 impl TipoConfirmacao {

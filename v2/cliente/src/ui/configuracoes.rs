@@ -98,7 +98,6 @@ pub struct ContextoConfiguracoes<'a> {
     // Conta
     pub edicao_perfil: Option<&'a EdicaoPerfil>,
     pub usuario: &'a str,
-    pub eh_local: bool,
     pub avatar_url: Option<&'a str>,
     pub banner_url: Option<&'a str>,
     pub uid: &'a str,
@@ -112,6 +111,8 @@ pub struct ContextoConfiguracoes<'a> {
     pub jogos_reg: &'a [crate::jogos_registrados::JogoRegistrado],
     pub jogos_reg_filtro: &'a str,
     pub processos_abertos: &'a [String],
+    pub jogos_reg_renomeando: Option<(&'a str, &'a str)>,
+    pub jogos_reg_seletor_aberto: bool,
     // Sistema → atualização
     pub atualizacao_status: Option<&'a str>,
     pub atualizando: bool,
@@ -343,6 +344,7 @@ pub fn modal_configuracoes<'a>(ctx: ContextoConfiguracoes<'a>) -> Element<'a, Ms
             cabecalho_conteudo,
             divisoria(),
             scrollable(container(conteudo_aba).max_width(640))
+                .id(ID_ROLAGEM)
                 .height(Length::Fill)
                 .style(tema::rolagem),
         ]
@@ -403,6 +405,9 @@ fn descricao_aba(aba: AbaConfig) -> &'static str {
     }
 }
 
+/// Rolagem do conteúdo da aba: volta ao topo ao trocar de aba.
+pub const ID_ROLAGEM: &str = "config-rolagem";
+
 // --- Conteúdo da Aba Áudio ---
 
 /// Um dispositivo na lista suspensa.
@@ -423,9 +428,29 @@ fn opcoes(lista: &[crate::dispositivos::DispositivoAudio]) -> Vec<OpcaoDisp> {
         .iter()
         .map(|d| OpcaoDisp {
             guid: d.guid.clone(),
-            nome: d.nome.clone(),
+            nome: nome_de_dispositivo(&d.nome),
         })
         .collect()
+}
+
+/// "default: USB PnP Audio Device Mono" → "USB PnP Audio Device Mono (padrão)".
+/// O libwebrtc cola o prefixo cru no dispositivo padrão do sistema.
+fn nome_de_dispositivo(nome: &str) -> String {
+    match nome.strip_prefix("default:") {
+        Some(resto) if !resto.trim().is_empty() => format!("{} (padrão)", resto.trim()),
+        _ => nome.to_string(),
+    }
+}
+
+/// Linha "texto ........ [interruptor]" das configurações.
+fn linha_interruptor<'a>(rotulo_txt: &'a str, ativo: bool, msg: Msg) -> Element<'a, Msg> {
+    row![
+        text(rotulo_txt).size(13).width(Length::Fill),
+        interruptor(ativo, msg)
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn titulo_secao<'a>(t: &'a str) -> Element<'a, Msg> {
@@ -571,35 +596,66 @@ fn renderiza_aba_audio<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
     );
 
     col = col.push(divisoria());
-    col = col.push(titulo_secao("Sons"));
+    col = col.push(titulo_secao("Sons do aplicativo"));
+
+    // Mesma grade de duas colunas da seção "Voz", para os sliders terem a
+    // mesma largura; liga/desliga sempre como interruptor.
+    let slider_pct = |valor: u8, msg: fn(u8) -> Msg| -> Element<'a, Msg> {
+        row![
+            slider(0..=100, valor, msg)
+                .step(1)
+                .style(tema::estilo_slider)
+                .width(Length::Fill),
+            text(format!("{valor}%"))
+                .size(12)
+                .width(40)
+                .color(c.texto_medio),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+    };
+    col = col.push(
+        row![
+            campo_rotulado(
+                "Volume do toque de chamada",
+                slider_pct(ctx.prefs.volume_toque, Msg::DefineVolumeToque)
+            )
+            .width(Length::FillPortion(1)),
+            campo_rotulado(
+                "Volume dos efeitos e do soundboard",
+                slider_pct(ctx.prefs.volume_efeitos, Msg::DefineVolumeEfeitos)
+            )
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(24),
+    );
     col = col.push(
         button(
             row![
-                svg(if ctx.soundboard_mudo {
-                    icones::volume_mudo()
-                } else {
-                    icones::volume()
-                })
-                .width(14)
-                .height(14),
-                text(if ctx.soundboard_mudo {
-                    "Soundboard silenciado (clique para ativar sons)"
-                } else {
-                    "Soundboard ativo (clique para silenciar para mim)"
-                })
-                .size(13),
+                svg(icones::volume())
+                    .width(14)
+                    .height(14)
+                    .style(tema::icone_cor(c.texto)),
+                text("Testar toque").size(13),
             ]
-            .spacing(8)
+            .spacing(6)
             .align_y(Alignment::Center),
         )
-        .padding([8, 14])
-        .style(if ctx.soundboard_mudo {
-            tema::botao_secundario
-        } else {
-            tema::botao_primario
-        })
-        .on_press(Msg::AlternaMuteSoundboardGlobal),
+        .padding([7, 14])
+        .style(tema::botao_secundario)
+        .on_press(Msg::TestaToque),
     );
+    col = col.push(linha_interruptor(
+        "Tocar som quando alguém ligar",
+        ctx.prefs.som_do_toque,
+        Msg::AlternaSomDoToque,
+    ));
+    col = col.push(linha_interruptor(
+        "Ouvir o soundboard dos outros",
+        !ctx.soundboard_mudo,
+        Msg::AlternaMuteSoundboardGlobal,
+    ));
     col.into()
 }
 
@@ -966,15 +1022,6 @@ fn renderiza_aba_conta<'a>(ctx: &ContextoConfiguracoes<'a>, secao: AbaPerfil) ->
         );
     }
 
-    // A aba da barra lateral decide a seção; Discord não tem segurança local.
-    if secao == AbaPerfil::Seguranca && !ctx.eh_local {
-        col = col.push(
-            text("Esta conta entra pelo Discord: a senha e o encerramento da conta ficam lá.")
-                .size(13)
-                .style(fraco),
-        );
-        return col.into();
-    }
     if secao == AbaPerfil::Perfil {
         return perfil::editor_perfil(ctx, ed);
     } else {
@@ -1172,6 +1219,14 @@ fn renderiza_aba_sistema<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg
         Msg::AlternaMinimizarParaBandeja,
     ));
     col = col.push(divisoria());
+    col = col.push(rotulo("RELATÓRIO DE PROBLEMAS"));
+    col = col.push(linha(
+        crate::relatorio::enviar_ligado(),
+        "Enviar o log do app aos desenvolvedores ao fechar",
+        "Ajuda a achar defeitos. Tokens e senhas de convite são removidos antes do envio.",
+        Msg::AlternaEnviarRelatorio,
+    ));
+    col = col.push(divisoria());
     col = col.push(rotulo("ATUALIZAÇÃO"));
     col = col.push(
         text("Ao abrir, o app procura uma versão nova e se atualiza sozinho.")
@@ -1228,6 +1283,175 @@ fn miniatura_de_jogo<'a>(capa: Option<u64>) -> Element<'a, Msg> {
     }
 }
 
+/// Modal de visão geral com detalhes do jogo (capa grande, processo, última atividade).
+pub fn modal_visao_jogo<'a>(j: &'a crate::estado::ModalVisaoJogo) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let capa_elem: Element<'a, Msg> = match j
+        .capa
+        .and_then(|id| crate::avatar::handle_exibicao(&crate::api::capa_url(id)))
+    {
+        Some(h) => iced::widget::image(h)
+            .width(130)
+            .height(180)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(tema::RAIO)
+            .into(),
+        None => container(crate::ui::efeitos::ico(
+            icones::controle(),
+            48.0,
+            c.texto_fraco,
+        ))
+        .width(130)
+        .height(180)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_| container::Style {
+            background: Some(iced::Background::Color(c.elevado)),
+            border: iced::Border {
+                radius: tema::RAIO.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into(),
+    };
+
+    let cabecalho = row![
+        text("Visão Geral do Jogo").size(16).font(negrito()),
+        space().width(Length::Fill),
+        button(
+            svg(icones::fechar())
+                .width(16)
+                .height(16)
+                .style(tema::icone_cor(c.texto_fraco)),
+        )
+        .padding(4)
+        .style(tema::botao_secundario)
+        .on_press(Msg::FechaVisaoJogo),
+    ]
+    .align_y(Alignment::Center);
+
+    let mut detalhes = column![
+        text(&j.nome).size(18).font(negrito()),
+        row![
+            container(
+                text(if j.manual {
+                    "Adicionado à mão"
+                } else {
+                    "Detectado automaticamente"
+                })
+                .size(11)
+                .style(destaque)
+            )
+            .padding([2, 6])
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(c.elevado)),
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+        space().height(4),
+        text(format!(
+            "Última atividade: {}",
+            crate::jogos_registrados::ha_quanto_tempo(j.ultimo)
+        ))
+        .size(12)
+        .style(fraco),
+    ]
+    .spacing(4)
+    .width(Length::Fill);
+
+    if let Some(exec) = &j.exec {
+        detalhes = detalhes.push(
+            text(format!("Executável / Processo: {exec}"))
+                .size(12)
+                .style(fraco),
+        );
+    }
+
+    let corpo = row![capa_elem, detalhes]
+        .spacing(16)
+        .align_y(Alignment::Start);
+
+    let rodape = row![
+        space().width(Length::Fill),
+        button(text("Fechar").size(13))
+            .padding([8, 16])
+            .style(tema::botao_primario)
+            .on_press(Msg::FechaVisaoJogo),
+    ]
+    .align_y(Alignment::Center);
+
+    let painel = container(
+        column![cabecalho, divisoria(), corpo, space().height(8), rodape]
+            .spacing(12)
+            .width(480),
+    )
+    .padding(20)
+    .style(move |_| container::Style {
+        background: Some(iced::Background::Color(c.fundo)),
+        border: iced::Border {
+            color: c.borda,
+            width: 1.0,
+            radius: tema::RAIO_GRANDE.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 20.0,
+        },
+        ..Default::default()
+    });
+
+    crate::ui::efeitos::janela_fechavel("visao-jogo", painel.into(), 0.65, Msg::FechaVisaoJogo)
+}
+
+fn interruptor<'a>(ativo: bool, msg: Msg) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let bg_cor = if ativo { c.destaque } else { c.elevado };
+    let dot_cor = if ativo {
+        c.sobre_destaque
+    } else {
+        c.texto_fraco
+    };
+    let bolinha = container(space().width(12).height(12)).style(move |_| container::Style {
+        background: Some(iced::Background::Color(dot_cor)),
+        border: iced::Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let switch_layout = if ativo {
+        row![space().width(12), bolinha].align_y(Alignment::Center)
+    } else {
+        row![bolinha, space().width(12)].align_y(Alignment::Center)
+    };
+    button(
+        container(switch_layout)
+            .width(34)
+            .height(20)
+            .padding([3, 4])
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(bg_cor)),
+                border: iced::Border {
+                    radius: 10.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+    )
+    .padding(0)
+    .style(|_, _| button::Style::default())
+    .on_press(msg)
+    .into()
+}
+
 fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> {
     let c = tema::cores();
     let cartao = move |corpo: Element<'a, Msg>| {
@@ -1248,32 +1472,159 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
     col = col.push(rotulo("JOGO ATUAL"));
     let atual = ctx.atividade.as_ref().and_then(|a| a.jogo.as_ref());
     col = col.push(match atual {
-        Some(j) => cartao(
-            row![
-                miniatura_de_jogo(j.capa),
-                column![
-                    text(j.nome.clone()).size(14).font(negrito()),
-                    text("Jogando!").size(12).style(fraco),
+        Some(j) => {
+            let visao = crate::estado::ModalVisaoJogo {
+                nome: j.nome.clone(),
+                exec: None,
+                capa: j.capa,
+                manual: false,
+                ultimo: chrono::Utc::now().timestamp_millis() as u64,
+            };
+            cartao(
+                row![
+                    button(miniatura_de_jogo(j.capa))
+                        .padding(0)
+                        .style(|_, _| button::Style::default())
+                        .on_press(Msg::AbreVisaoJogo(visao.clone())),
+                    column![
+                        button(text(j.nome.clone()).size(14).font(negrito()))
+                            .padding(0)
+                            .style(|_, _| button::Style::default())
+                            .on_press(Msg::AbreVisaoJogo(visao)),
+                        row![
+                            container(space().width(8).height(8)).style(move |_| container::Style {
+                                background: Some(iced::Background::Color(c.destaque)),
+                                border: iced::Border {
+                                    radius: 4.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                            text("Jogando agora!").size(12).style(destaque),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(3)
+                    .width(Length::Fill),
+                    interruptor(true, Msg::JogosRegAlternaAtivo(j.nome.clone())),
                 ]
-                .spacing(2),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
-        ),
+                .spacing(12)
+                .align_y(Alignment::Center)
+                .into(),
+            )
+        }
         None => cartao(
-            text("Nenhum jogo detectado agora. Abra um jogo ou adicione o programa abaixo.")
+            text("Nenhum jogo detectado agora. Abra um jogo suportado ou adicione o programa abaixo.")
                 .size(12)
                 .style(fraco)
                 .into(),
         ),
     });
+
+    let link_adicionar = row![
+        text("Não está vendo seu jogo?").size(12).style(fraco),
+        button(
+            text(if ctx.jogos_reg_seletor_aberto {
+                "Ocultar seletor"
+            } else {
+                "Adicione-o!"
+            })
+            .size(12)
+            .style(destaque)
+        )
+        .padding(0)
+        .style(|_, _| button::Style::default())
+        .on_press(Msg::JogosRegAlternaSeletor),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    col = col.push(link_adicionar);
+
+    if ctx.jogos_reg_seletor_aberto {
+        let mut caixa_seletor = column![
+            row![
+                text_input("Filtrar programas abertos…", ctx.jogos_reg_filtro)
+                    .on_input(Msg::JogosRegFiltro)
+                    .padding([6, 10])
+                    .size(13)
+                    .style(tema::campo),
+                crate::ui::efeitos::com_dica(
+                    button(crate::ui::efeitos::ico(
+                        icones::atualizar(),
+                        15.0,
+                        c.texto_fraco
+                    ))
+                    .padding(8)
+                    .style(tema::botao_secundario)
+                    .on_press(Msg::JogosRegAtualiza),
+                    "Atualizar a lista de programas",
+                    iced::widget::tooltip::Position::Left,
+                ),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+        ]
+        .spacing(8);
+
+        let filtro = ctx.jogos_reg_filtro.trim().to_lowercase();
+        let ja: std::collections::HashSet<&str> = ctx
+            .jogos_reg
+            .iter()
+            .filter_map(|j| j.exec.as_deref())
+            .collect();
+        let mut mostrados = 0;
+        let mut lista_procs = Column::new().spacing(4);
+        for p in ctx.processos_abertos {
+            if mostrados >= 14 {
+                break;
+            }
+            if ja.contains(p.as_str()) || (!filtro.is_empty() && !p.contains(&filtro)) {
+                continue;
+            }
+            mostrados += 1;
+            lista_procs = lista_procs.push(
+                row![
+                    text(p.clone()).size(12).width(Length::Fill),
+                    button(text("Adicionar").size(11))
+                        .padding([4, 10])
+                        .style(tema::botao_primario)
+                        .on_press(Msg::JogosRegAdiciona(p.clone())),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        if mostrados == 0 {
+            lista_procs = lista_procs.push(
+                text("Nenhum programa novo encontrado.")
+                    .size(12)
+                    .style(fraco),
+            );
+        }
+        caixa_seletor = caixa_seletor.push(lista_procs);
+        col = col.push(
+            container(caixa_seletor)
+                .padding(12)
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(c.elevado)),
+                    border: iced::Border {
+                        color: c.borda,
+                        width: 1.0,
+                        radius: tema::RAIO.into(),
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+
     col = col.push(divisoria());
 
     col = col.push(rotulo("JOGOS ADICIONADOS"));
     col = col.push(
         text(
-            "Jogos que o app já viu você jogar e os que você adicionou. Se o nome for igual ou bem parecido com o de um jogo conhecido, aparecem a capa e o nome certo.",
+            "Jogos detectados e adicionados à sua biblioteca. Clique no nome para ver a visão geral ou no lápis para renomear.",
         )
         .size(12)
         .style(fraco),
@@ -1285,29 +1636,98 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
         ctx.jogos_reg.iter().collect();
     ordenados.sort_by(|a, b| b.ultimo.cmp(&a.ultimo).then(a.nome.cmp(&b.nome)));
     for j in ordenados {
-        let mut info = column![
-            text(j.nome.clone()).size(13).font(negrito()),
-            text(crate::jogos_registrados::ha_quanto_tempo(j.ultimo))
-                .size(11)
-                .style(fraco),
-        ]
-        .spacing(2)
-        .width(Length::Fill);
-        if let (true, Some(e)) = (j.manual, j.exec.as_deref()) {
-            info = info.push(
-                text(format!("Adicionado à mão · {e}"))
+        let chave = j.exec.as_deref().unwrap_or(j.nome.as_str());
+        let renomeando_este = ctx
+            .jogos_reg_renomeando
+            .as_ref()
+            .map(|(k, _)| *k == chave || *k == j.nome.as_str())
+            .unwrap_or(false);
+
+        let visao = crate::estado::ModalVisaoJogo {
+            nome: j.nome.clone(),
+            exec: j.exec.clone(),
+            capa: j.capa,
+            manual: j.manual,
+            ultimo: j.ultimo,
+        };
+
+        let miniatura = button(miniatura_de_jogo(j.capa))
+            .padding(0)
+            .style(|_, _| button::Style::default())
+            .on_press(Msg::AbreVisaoJogo(visao.clone()));
+
+        let info_col: Element<'a, Msg> = if renomeando_este {
+            let rascunho = ctx
+                .jogos_reg_renomeando
+                .as_ref()
+                .map(|(_, r)| *r)
+                .unwrap_or(&j.nome);
+            row![
+                text_input("Novo nome do jogo…", rascunho)
+                    .on_input(Msg::JogosRegRascunhoNome)
+                    .padding([4, 8])
+                    .size(12)
+                    .style(tema::campo)
+                    .width(Length::Fill),
+                button(text("Salvar").size(11))
+                    .padding([4, 8])
+                    .style(tema::botao_primario)
+                    .on_press(Msg::JogosRegSalvaNome),
+                button(text("Cancelar").size(11))
+                    .padding([4, 8])
+                    .style(tema::botao_secundario)
+                    .on_press(Msg::JogosRegCancelaRenomear),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            let mut info = column![
+                button(text(j.nome.clone()).size(13).font(negrito()))
+                    .padding(0)
+                    .style(|_, _| button::Style::default())
+                    .on_press(Msg::AbreVisaoJogo(visao)),
+                text(crate::jogos_registrados::ha_quanto_tempo(j.ultimo))
                     .size(11)
                     .style(fraco),
-            );
-        }
+            ]
+            .spacing(2)
+            .width(Length::Fill);
+            if let (true, Some(e)) = (j.manual, j.exec.as_deref()) {
+                info = info.push(
+                    text(format!("Adicionado à mão · {e}"))
+                        .size(11)
+                        .style(fraco),
+                );
+            }
+            info.into()
+        };
+
         col = col.push(
             row![
-                miniatura_de_jogo(j.capa),
-                info,
+                miniatura,
+                info_col,
+                crate::ui::efeitos::com_dica(
+                    button(crate::ui::efeitos::ico(
+                        icones::lapis(),
+                        14.0,
+                        c.texto_fraco
+                    ))
+                    .padding(6)
+                    .style(tema::botao_secundario)
+                    .on_press(Msg::JogosRegIniciaRenomear {
+                        exec: chave.to_string(),
+                        nome_atual: j.nome.clone(),
+                    }),
+                    "Renomear jogo",
+                    iced::widget::tooltip::Position::Left,
+                ),
+                interruptor(j.ativo, Msg::JogosRegAlternaAtivo(chave.to_string()),),
                 crate::ui::efeitos::com_dica(
                     button(crate::ui::efeitos::ico(
                         icones::lixeira(),
-                        15.0,
+                        14.0,
                         c.texto_fraco
                     ))
                     .padding(6)
@@ -1317,77 +1737,27 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
                     iced::widget::tooltip::Position::Left,
                 ),
             ]
-            .spacing(12)
+            .spacing(10)
             .align_y(Alignment::Center),
         );
     }
-    col = col.push(divisoria());
 
-    col = col.push(rotulo("ADICIONAR UM PROGRAMA ABERTO"));
-    col = col.push(
-        text("Abra o jogo, escolha o programa dele na lista e ele passa a aparecer como \"jogando\".")
-            .size(12)
-            .style(fraco),
-    );
-    col = col.push(
-        row![
-            text_input("Filtrar programas abertos…", ctx.jogos_reg_filtro)
-                .on_input(Msg::JogosRegFiltro)
-                .padding([8, 10])
-                .size(13)
-                .style(tema::campo),
-            crate::ui::efeitos::com_dica(
-                button(crate::ui::efeitos::ico(
-                    icones::atualizar(),
-                    15.0,
-                    c.texto_fraco
-                ))
-                .padding(8)
-                .style(tema::botao_secundario)
-                .on_press(Msg::JogosRegAtualiza),
-                "Atualizar a lista",
-                iced::widget::tooltip::Position::Left,
-            ),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    );
-    let filtro = ctx.jogos_reg_filtro.trim().to_lowercase();
-    let ja: std::collections::HashSet<&str> = ctx
-        .jogos_reg
-        .iter()
-        .filter_map(|j| j.exec.as_deref())
-        .collect();
-    let mut mostrados = 0;
-    for p in ctx.processos_abertos {
-        if mostrados >= 14 {
-            break;
-        }
-        if ja.contains(p.as_str()) || (!filtro.is_empty() && !p.contains(&filtro)) {
-            continue;
-        }
-        mostrados += 1;
-        col = col.push(
-            row![
-                text(p.clone()).size(13).width(Length::Fill),
-                button(text("Adicionar").size(12))
-                    .padding([4, 10])
-                    .style(tema::botao_secundario)
-                    .on_press(Msg::JogosRegAdiciona(p.clone())),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
-    }
-    if mostrados == 0 {
-        col = col.push(text("Nenhum programa encontrado.").size(12).style(fraco));
-    }
     col.into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nome_do_dispositivo_padrao_fica_legivel() {
+        assert_eq!(
+            nome_de_dispositivo("default: USB PnP Audio Device Mono"),
+            "USB PnP Audio Device Mono (padrão)"
+        );
+        assert_eq!(nome_de_dispositivo("Fone Bluetooth"), "Fone Bluetooth");
+        assert_eq!(nome_de_dispositivo("default:"), "default:");
+    }
 
     #[test]
     fn testa_todas_as_abas_config() {

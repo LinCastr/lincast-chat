@@ -14,6 +14,7 @@ impl SalaAberta {
                 ui::conversa::menu_mais(
                     self.editando.is_none() && self.sussurro_alvos.is_empty(),
                     self.na_chamada,
+                    self.entrada.sala.starts_with("grp_"),
                 ),
                 false,
             ),
@@ -47,7 +48,10 @@ impl SalaAberta {
                 ),
                 false,
             ),
-            PainelFlutuante::Atividades => (ui::palco::menu_atividades(), true),
+            PainelFlutuante::Atividades => (
+                ui::palco::menu_atividades(self.entrada.sala.starts_with("grp_")),
+                true,
+            ),
             PainelFlutuante::MaisPalco => (ui::palco::menu_mais_palco(), true),
         }
     }
@@ -261,6 +265,7 @@ impl SalaAberta {
             pessoas.push(ui::palco::PessoaNoPalco {
                 uid: &m.uid,
                 nome: &m.name,
+                usuario: m.usuario.as_deref(),
                 avatar: m.avatar.as_deref(),
                 falando: !chamando && conexao.is_some_and(|p| p.falando),
                 mudo: if sou_eu {
@@ -587,6 +592,16 @@ impl SalaAberta {
                 area_envio.push(container(ui::chat::barra_digitando(txt)).padding([0, 16]));
         }
 
+        if let Some(filtro) = ui::chat::detecta_comando_rascunho(&self.rascunho) {
+            // Só sugere: quem decide é o servidor (login "val47").
+            let eh_dev = self.entrada.nome == "val47";
+            let eh_grupo = self.entrada.sala.starts_with("grp_");
+            let sugestoes = ui::chat::filtra_comandos_chat(filtro, eh_dev, eh_grupo);
+            if !sugestoes.is_empty() {
+                area_envio = area_envio.push(ui::chat::menu_comandos_chat(&sugestoes));
+            }
+        }
+
         if let Some(prefixo) = ui::chat::detecta_mencao_rascunho(&self.rascunho) {
             let candidatos = ui::chat::filtra_candidatos_mencao(prefixo, &self.pessoas);
             if !candidatos.is_empty() {
@@ -594,7 +609,14 @@ impl SalaAberta {
             }
         }
 
-        let placeholder = if self.editando.is_some() {
+        let wordle_ativo = self.wordle.as_ref().is_some_and(|w| {
+            w.modo != ui::wordle::ModoWordle::Minimizado
+                && w.estado.as_ref().and_then(|e| e.fim.as_ref()).is_none()
+        });
+
+        let placeholder = if wordle_ativo {
+            "Wordle em andamento (digite seu palpite diretamente no teclado)...".to_string()
+        } else if self.editando.is_some() {
             "Editar mensagem...".to_string()
         } else if let Some(r) = &self.resposta_pendente {
             format!("Respondendo a {}...", r.autor)
@@ -611,12 +633,15 @@ impl SalaAberta {
             format!("Conversar em {}", self.titulo)
         };
 
-        let campo = text_input(&placeholder, &self.rascunho)
-            .on_input(Msg::Rascunho)
-            .on_submit(Msg::EnviaChat)
+        let mut campo = text_input(&placeholder, &self.rascunho)
+            .id("chat-rascunho-input")
             .padding([10, 12])
             .size(14)
             .style(tema::campo);
+
+        if !wordle_ativo {
+            campo = campo.on_input(Msg::Rascunho).on_submit(Msg::EnviaChat);
+        }
 
         let dx = anim::balanco("botao-gif") * 16.0;
         let botao_gif = button(text("GIF").size(12).font(negrito()))
@@ -710,9 +735,15 @@ impl SalaAberta {
         foto: Option<&'a str>,
     ) -> Element<'a, Msg> {
         if m.extra.app.as_deref() == Some("wordle") {
-            return container(ui::wordle::mensagem_app(m, self.wordle_grupo.as_ref()))
-                .padding([0, 4])
-                .into();
+            return container(ui::wordle::mensagem_app(
+                m,
+                m.extra
+                    .wordle_dia
+                    .as_deref()
+                    .and_then(|d| self.wordle_grupo.get(d)),
+            ))
+            .padding([0, 4])
+            .into();
         }
         let eh_minha = ui::chat::eh_minha_mensagem(m, &self.entrada.nome, self.meu_uid.as_deref());
         let mut corpo = Column::new().spacing(4);
@@ -769,13 +800,10 @@ impl SalaAberta {
                     }
                     ui::chat::TrechoMensagem::Texto(t) => {
                         if !t.is_empty() {
-                            let mut linha_texto = row![ui::chat::renderiza_texto_com_links(t)]
-                                .spacing(4)
-                                .align_y(Alignment::Center);
-                            if m.editada_em.is_some() && idx == 0 {
-                                linha_texto = linha_texto.push(ui::chat::tag_editada());
-                            }
-                            corpo = corpo.push(linha_texto);
+                            corpo = corpo.push(ui::chat::renderiza_texto_com_links(
+                                t,
+                                m.editada_em.is_some() && idx == 0,
+                            ));
                         }
                     }
                 }

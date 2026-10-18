@@ -172,6 +172,7 @@ pub struct MensagemExtra {
     /// Mensagem de "app" (hoje só `wordle`) e o número do jogo do dia.
     pub app: Option<String>,
     pub wordle_numero: Option<i64>,
+    pub wordle_dia: Option<String>,
     /// Arquivo anexado (enviado por `/api/arquivo`, baixado por demanda).
     pub arquivo: Option<ArquivoMsg>,
 }
@@ -279,6 +280,8 @@ pub enum Evento {
         de: String,
         emoji: String,
     },
+    /// Alguém do grupo jogou o Wordle dessa rodada: recarregar a grade.
+    WordleGrupoMudou(String),
     CutucadaRecebida {
         de_nome: String,
     },
@@ -537,6 +540,7 @@ enum Interno {
 struct Par {
     pc: PeerConnection,
     educado: bool,
+    renegociar: bool,
     pendentes: Vec<IceCandidate>,
     remetentes_tela: Vec<RtpSender>,
     remetentes_camera: Vec<RtpSender>,
@@ -779,6 +783,7 @@ async fn roda_interno(
         sou_dono: false,
     };
 
+    let _ = ator.fabrica.acquire_platform_adm();
     let cfg_audio = crate::dispositivos::carrega_config();
     if let Some(guid) = &cfg_audio.entrada_guid {
         crate::dispositivos::aplica_dispositivo_gravacao(&ator.fabrica, guid);
@@ -832,6 +837,7 @@ async fn roda_interno(
             log::warn!("{texto}");
         }
     }
+    ator.fabrica.release_platform_adm();
     Ok(())
 }
 
@@ -938,6 +944,7 @@ fn mensagem_de(v: &Value) -> Option<Mensagem> {
                 encaminhada_de: None,
                 app: None,
                 wordle_numero: None,
+                wordle_dia: None,
                 arquivo: None,
                 quem: v["quem"].as_str().map(String::from),
                 duracao: v["duracao"].as_str().map(String::from),
@@ -1055,6 +1062,10 @@ fn mensagem_de(v: &Value) -> Option<Mensagem> {
             encaminhada_de: v["fwd"]["nome"].as_str().map(String::from),
             app,
             wordle_numero: v["wordle"]["numero"].as_i64(),
+            wordle_dia: v["wordle"]["dia"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| v["wordle"]["dia"].as_i64().map(|n| n.to_string())),
             arquivo: v["arquivo"]["id"].as_str().map(|id| ArquivoMsg {
                 id: id.to_string(),
                 nome: v["arquivo"]["nome"]
@@ -2565,6 +2576,7 @@ impl Ator {
             "screen-state" => {
                 let sid = msg["streamId"].as_str().unwrap_or("").to_string();
                 let ativa = msg["active"].as_bool().unwrap_or(false);
+                log::info!("[{de}] screen-state active={ativa} stream={sid}");
                 if ativa {
                     self.telas_anunciadas.insert(sid);
                 } else {
@@ -2812,6 +2824,11 @@ impl Ator {
                         .await;
                 }
             }
+            "wordle-grupo" => {
+                if let Some(dia) = msg["dia"].as_str() {
+                    self.emite(Evento::WordleGrupoMudou(dia.to_string())).await;
+                }
+            }
             "cutucada" => {
                 let de_nome = msg["name"].as_str().unwrap_or("Alguém").to_string();
                 self.emite(Evento::CutucadaRecebida { de_nome }).await;
@@ -2876,10 +2893,23 @@ impl Ator {
         if self.pares.contains_key(id) {
             return Ok(());
         }
+        log::info!("[{id}] criando conexão (iniciador={iniciador})");
         let pc = self
             .fabrica
             .create_peer_connection(self.rtc.clone())
             .map_err(|e| anyhow!("create_peer_connection: {e:?}"))?;
+        let (alvo, tx) = (id.to_string(), self.tx.clone());
+        pc.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx.send(Interno::Candidato(alvo.clone(), c));
+        })));
+        let (alvo, tx) = (id.to_string(), self.tx.clone());
+        pc.on_connection_state_change(Some(Box::new(move |s| {
+            let _ = tx.send(Interno::Estado(alvo.clone(), s));
+        })));
+        let (alvo, tx) = (id.to_string(), self.tx.clone());
+        pc.on_track(Some(Box::new(move |t| {
+            let _ = tx.send(Interno::Trilha(alvo.clone(), t));
+        })));
         let mut remetentes_tela = Vec::new();
         let mut remetentes_camera = Vec::new();
         if let Some(m) = &self.mic {
@@ -2908,23 +2938,13 @@ impl Ator {
         pc.on_negotiation_needed(Some(Box::new(move |_| {
             let _ = tx.send(Interno::Negociar(alvo.clone()));
         })));
-        let (alvo, tx) = (id.to_string(), self.tx.clone());
-        pc.on_ice_candidate(Some(Box::new(move |c| {
-            let _ = tx.send(Interno::Candidato(alvo.clone(), c));
-        })));
-        let (alvo, tx) = (id.to_string(), self.tx.clone());
-        pc.on_connection_state_change(Some(Box::new(move |s| {
-            let _ = tx.send(Interno::Estado(alvo.clone(), s));
-        })));
-        let (alvo, tx) = (id.to_string(), self.tx.clone());
-        pc.on_track(Some(Box::new(move |t| {
-            let _ = tx.send(Interno::Trilha(alvo.clone(), t));
-        })));
+        let precisa_renegociar = !iniciador && (self.camera.is_some() || self.tela.is_some());
         self.pares.insert(
             id.to_string(),
             Par {
                 pc,
                 educado: !iniciador,
+                renegociar: precisa_renegociar,
                 pendentes: Vec::new(),
                 remetentes_tela,
                 remetentes_camera,
@@ -2936,14 +2956,24 @@ impl Ator {
                 ultimo_inbound: None,
             },
         );
+        if iniciador {
+            let _ = self.tx.send(Interno::Negociar(id.to_string()));
+        }
         Ok(())
     }
 
     fn trilha_remota(&mut self, id: &str, t: TrackEvent) {
-        let de_tela = t
-            .streams
-            .iter()
-            .any(|s| self.telas_anunciadas.contains(&s.id()));
+        let de_tela = t.streams.iter().any(|s| {
+            let sid = s.id();
+            sid.starts_with("lincast-tela-") || self.telas_anunciadas.contains(&sid)
+        });
+        log::info!(
+            "[{id}] trilha recebida: {} (de_tela={de_tela})",
+            match &t.track {
+                MediaStreamTrack::Video(_) => "vídeo",
+                MediaStreamTrack::Audio(_) => "áudio",
+            }
+        );
         match t.track {
             MediaStreamTrack::Video(video) => {
                 let dono = id.to_string();
@@ -2954,6 +2984,7 @@ impl Ator {
                     // A interface não precisa de mais que ~30 quadros/s, e cada quadro
                     // em RGBA é grande: converter só o que vai ser mostrado.
                     let mut ultimo = std::time::Instant::now() - Duration::from_secs(1);
+                    let mut primeiro_quadro = false;
                     while let Some(q) = fluxo.next().await {
                         if ultimo.elapsed() < Duration::from_millis(33) {
                             continue;
@@ -2962,6 +2993,12 @@ impl Ator {
                         let (w, h) = (q.buffer.width(), q.buffer.height());
                         if w == 0 || h == 0 {
                             continue;
+                        }
+                        if !primeiro_quadro {
+                            primeiro_quadro = true;
+                            log::info!(
+                                "[{dono}] primeiro quadro de vídeo: {w}x{h} (de_tela={de_tela})"
+                            );
                         }
                         let mut rgba = vec![0u8; (w * h * 4) as usize];
                         q.buffer.to_argb(
@@ -3051,15 +3088,18 @@ impl Ator {
     }
 
     async fn oferece(&mut self, id: &str) -> Result<()> {
-        let Some(par) = self.pares.get(id) else {
+        let Some(par) = self.pares.get_mut(id) else {
             return Ok(());
         };
         if par.educado && par.pc.current_remote_description().is_none() {
+            par.renegociar = true;
             return Ok(());
         }
         if par.pc.signaling_state() != SignalingState::Stable {
+            par.renegociar = true;
             return Ok(());
         }
+        par.renegociar = false;
         let pc = par.pc.clone();
         let oferta = pc
             // `OfferOptions::default()` manda offerToReceive* = false, e no
@@ -3075,7 +3115,7 @@ impl Ator {
         pc.set_local_description(oferta.clone())
             .await
             .map_err(|e| anyhow!("[{id}] set_local(offer): {e:?}"))?;
-        log::debug!("[{id}] oferta enviada: {}", resumo_sdp(&oferta.to_string()));
+        log::info!("[{id}] oferta enviada: {}", resumo_sdp(&oferta.to_string()));
         self.envia(json!({ "type": "offer", "to": id, "sdp": { "type": "offer", "sdp": oferta.to_string() } }));
         Ok(())
     }
@@ -3088,7 +3128,7 @@ impl Ator {
             self.cria_par(id, false)?;
         }
         let texto = sdp["sdp"].as_str().context("sdp sem texto")?;
-        log::debug!("[{id}] {tipo} recebida: {}", resumo_sdp(texto));
+        log::info!("[{id}] {tipo} recebida: {}", resumo_sdp(texto));
         let (pc, educado) = {
             let par = &self.pares[id];
             (par.pc.clone(), par.educado)
@@ -3130,11 +3170,13 @@ impl Ator {
             pc.set_local_description(resposta.clone())
                 .await
                 .map_err(|e| anyhow!("[{id}] set_local(answer): {e:?}"))?;
-            log::debug!(
+            log::info!(
                 "[{id}] resposta enviada: {}",
                 resumo_sdp(&resposta.to_string())
             );
             self.envia(json!({ "type": "answer", "to": id, "sdp": { "type": "answer", "sdp": resposta.to_string() } }));
+        }
+        if self.pares.get(id).is_some_and(|p| p.renegociar) {
             let _ = self.tx.send(Interno::Negociar(id.to_string()));
         }
         Ok(())
@@ -3170,10 +3212,9 @@ const TAXA: u32 = 48_000;
 const CANAIS: u32 = 2;
 
 fn inicia_audio_de_apps(apps: &[String]) -> Result<(NativeAudioSource, tokio::process::Child)> {
-    let bin = std::env::current_exe()?.with_file_name("concord-audio");
-    if !bin.exists() {
-        bail!("não achei o concord-audio ao lado do app");
-    }
+    let Some(bin) = crate::portal_tela::acha_concord_audio() else {
+        bail!("o som da transmissão precisa do concord-audio, que não foi achado: reinstale o app");
+    };
     let mut args = vec!["capturar".to_string()];
     if apps.iter().any(|a| a == "*") {
         args.push("--todos".into());

@@ -371,12 +371,13 @@ pub struct ToqueSonoro {
 }
 
 impl ToqueSonoro {
-    pub fn inicia() -> Self {
+    pub fn inicia(volume: u8) -> Self {
         use std::sync::atomic::{AtomicBool, Ordering};
         let parar = std::sync::Arc::new(AtomicBool::new(false));
         let flag = parar.clone();
         std::thread::spawn(move || {
-            let wav = sintetiza_toque();
+            let mut wav = sintetiza_toque();
+            aplica_volume(&mut wav, volume);
             while !flag.load(Ordering::Relaxed) {
                 reproduz_wav(&wav);
             }

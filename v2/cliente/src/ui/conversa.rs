@@ -242,7 +242,7 @@ pub fn icone_da_conversa<'a>(
 }
 
 /// O menu do botão "+" do campo de texto.
-pub fn menu_mais<'a>(pode_anexar: bool, em_chamada: bool) -> Element<'a, Msg> {
+pub fn menu_mais<'a>(pode_anexar: bool, em_chamada: bool, eh_grupo: bool) -> Element<'a, Msg> {
     let c = tema::cores();
     let item = |icone: iced::widget::svg::Handle, rotulo: &'static str, msg: Option<Msg>| {
         let ativo = msg.is_some();
@@ -270,7 +270,7 @@ pub fn menu_mais<'a>(pode_anexar: bool, em_chamada: bool) -> Element<'a, Msg> {
         })
         .on_press_maybe(msg.clone())
     };
-    let itens = iced::widget::column![
+    let mut itens = iced::widget::column![
         item(
             icones::anexo(),
             "Enviar arquivo",
@@ -283,19 +283,25 @@ pub fn menu_mais<'a>(pode_anexar: bool, em_chamada: bool) -> Element<'a, Msg> {
         ),
         item(icones::roda(), "Roleta", Some(Msg::AlternarRoletas)),
         item(icones::lapis(), "Quadro branco", Some(Msg::AlternarQuadro)),
-        item(
+    ]
+    .spacing(2);
+    if eh_grupo {
+        itens = itens.push(item(
             icones::grade_3x3(),
             "Wordle",
             Some(Msg::Wordle(crate::ui::wordle::WordleMsg::Inicia)),
-        ),
-        item(icones::fone(), "Sussurrar", Some(Msg::AlternaMenuSussurro)),
-        item(
-            icones::smile(),
-            "Reações na tela",
-            Some(Msg::AlternaMenuReacoesFlutuantes)
-        ),
-    ]
-    .spacing(2);
+        ));
+    }
+    itens = itens.push(item(
+        icones::fone(),
+        "Sussurrar",
+        Some(Msg::AlternaMenuSussurro),
+    ));
+    itens = itens.push(item(
+        icones::smile(),
+        "Reações na tela",
+        Some(Msg::AlternaMenuReacoesFlutuantes),
+    ));
     // Os sons só existem dentro de uma chamada.
     let itens = if em_chamada {
         itens.push(item(
@@ -367,7 +373,27 @@ pub fn cabecalho<'a>(
             ))
             .into()
     } else {
-        container(identidade).padding([4, 6]).into()
+        let alvo = info
+            .and_then(|i| {
+                i.outros()
+                    .first()
+                    .map(|m| m.usuario.clone().unwrap_or_else(|| m.name.clone()))
+            })
+            .unwrap_or_else(|| titulo.to_string());
+        button(identidade)
+            .padding([4, 6])
+            .style(move |_, st| button::Style {
+                background: matches!(st, button::Status::Hovered)
+                    .then_some(Background::Color(c.elevado)),
+                text_color: c.texto,
+                border: Border {
+                    radius: tema::RAIO.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .on_press(Msg::AbrePerfilUsuario(alvo))
+            .into()
     };
     // O nome cede lugar aos botões quando a janela é estreita.
     let esquerda: Element<'a, Msg> = container(esquerda)

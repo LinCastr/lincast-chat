@@ -82,6 +82,37 @@ pub fn lista_dispositivos(
     (entradas, saidas)
 }
 
+/// Lista dispositivos fora de uma chamada ativa (adquire e libera o ADM da fábrica temporária).
+pub fn lista_dispositivos_avulso() -> (Vec<DispositivoAudio>, Vec<DispositivoAudio>) {
+    let fabrica = PeerConnectionFactory::default();
+    let _ = fabrica.acquire_platform_adm();
+    let res = lista_dispositivos(&fabrica);
+    fabrica.release_platform_adm();
+    res
+}
+
+/// Salva dispositivo de gravação e atualiza o nome correspondente.
+pub fn salva_dispositivo_gravacao(guid: &str) {
+    let mut cfg = carrega_config();
+    cfg.entrada_guid = Some(guid.to_string());
+    let (entradas, _) = lista_dispositivos_avulso();
+    if let Some(d) = entradas.iter().find(|d| d.guid == guid) {
+        cfg.entrada_nome = Some(d.nome.clone());
+    }
+    salva_config(&cfg);
+}
+
+/// Salva dispositivo de reprodução e atualiza o nome correspondente.
+pub fn salva_dispositivo_reproducao(guid: &str) {
+    let mut cfg = carrega_config();
+    cfg.saida_guid = Some(guid.to_string());
+    let (_, saidas) = lista_dispositivos_avulso();
+    if let Some(d) = saidas.iter().find(|d| d.guid == guid) {
+        cfg.saida_nome = Some(d.nome.clone());
+    }
+    salva_config(&cfg);
+}
+
 /// Aplica o dispositivo de gravação (microfone).
 pub fn aplica_dispositivo_gravacao(fabrica: &PeerConnectionFactory, guid: &str) -> bool {
     fabrica.set_recording_device_by_guid(guid)

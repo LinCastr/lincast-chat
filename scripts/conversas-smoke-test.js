@@ -429,6 +429,13 @@ async function main() {
 
   // --- P4: Wordle ----------------------------------------------------------------
   secao('P4  Wordle (palavra do dia no servidor)');
+  // O Wordle é só de grupos: um grupo novo de A e B (C fica de fora).
+  r = await http('POST', '/api/grupos', { membros: [B.uid] }, A.ck);
+  const gw4 = r.j.conversa;
+  r = await http('POST', `/api/conversas/${dm.id}/wordle`, null, A.ck);
+  confere(r.s === 400, 'Wordle em conversa direta recusado (400)');
+  r = await http('POST', '/api/wordle/tentar', { palavra: 'crate', dia: '99999_r7' }, A.ck);
+  confere(r.s === 400 && r.j.codigo === 'rodada', 'rodada inventada recusada (400)');
   r = await http('GET', '/api/wordle', null, A.ck);
   confere(r.s === 200 && r.j.max === 6 && r.j.tentativas.length === 0 && r.j.resposta === undefined, 'estado inicial sem resposta');
   r = await http('POST', '/api/wordle/tentar', { palavra: 'abc' }, A.ck);
@@ -442,19 +449,26 @@ async function main() {
   confere(r.s === 200 && /^[gyx]{5}$/.test(r.j.tentativas[1].cores), 'segunda tentativa devolve cores');
   r = await http('GET', '/api/wordle', null, B.ck);
   confere(r.j.tentativas.length === 0, 'estado é por pessoa');
-  const gw = await http('POST', `/api/conversas/${dm.id}/wordle`, null, A.ck);
+  const gw = await http('POST', `/api/conversas/${gw4.id}/wordle`, null, A.ck);
   confere(gw.s === 200 && gw.j.existia === false, 'cria a mensagem do Wordle na conversa');
-  r = await http('POST', `/api/conversas/${dm.id}/wordle`, null, B.ck);
+  r = await http('POST', `/api/conversas/${gw4.id}/wordle`, null, B.ck);
   confere(r.s === 200 && r.j.existia === true && r.j.id === gw.j.id, 'repetir /wordle reaproveita a mensagem do dia');
-  r = await http('GET', `/api/conversas/${dm.id}/wordle`, null, B.ck);
+  r = await http('GET', `/api/conversas/${gw4.id}/wordle`, null, B.ck);
   confere(r.s === 200 && r.j.hoje.length === 1 && r.j.hoje[0].cores.length === 2 && JSON.stringify(r.j).indexOf('crate') < 0, 'grupo mostra só cores, nunca as letras');
-  r = await http('POST', `/api/conversas/${dm.id}/wordle`, null, C.ck);
+  r = await http('POST', `/api/conversas/${gw4.id}/wordle`, null, C.ck);
   confere(r.s === 404, 'não-membro não mexe no Wordle da conversa (404)');
+  const wgB = await abreWs(B.ck);
+  envia(wgB, { type: 'join', conversa: gw4.id, espectador: true });
+  await espera(300);
   r = await http('POST', '/api/wordle/tentar', { palavra: 'crane' }, A.ck);
+  await espera(300);
+  confere(primeiro(wgB, 'wordle-grupo', m => m.dia === r.j.dia) && !JSON.stringify(todos(wgB, 'wordle-grupo')).includes('crane'),
+    'quem está no grupo é avisado da jogada (sem a palavra)');
+  wgB.close();
   confere(r.s === 200 && r.j.fim === 'ganhou' && r.j.resposta === 'crane', 'acertar encerra e revela a resposta');
   r = await http('POST', '/api/wordle/tentar', { palavra: 'crate' }, A.ck);
   confere(r.s === 409 && r.j.codigo === 'fim', 'depois de terminar não aceita mais tentativa');
-  r = await http('GET', `/api/conversas/${dm.id}/wordle`, null, B.ck);
+  r = await http('GET', `/api/conversas/${gw4.id}/wordle`, null, B.ck);
   confere(r.j.streak >= 1, 'sequência do grupo conta o dia de hoje');
 
   // --- P7: soundboard (volume do emissor viaja no evento) -----------------------

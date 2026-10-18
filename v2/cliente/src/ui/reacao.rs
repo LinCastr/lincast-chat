@@ -60,7 +60,7 @@ pub fn seletor_reacoes<'a>() -> Element<'a, Msg> {
     for &emoji in EMOJIS_PERMITIDOS {
         let em_str = emoji.to_string();
         grade = grade.push(
-            button(text(emoji).size(18))
+            button(text(emoji).size(18).font(crate::tema::FONTE_EMOJI))
                 .padding([4, 6])
                 .style(tema::botao_secundario)
                 .on_press(Msg::EnviarReacao(em_str)),
@@ -119,7 +119,7 @@ pub fn camada_reacoes<'a>(reacoes: &'a [ReacaoAtiva]) -> Element<'a, Msg> {
         // Balão com emoji grande e o nome de quem reagiu
         let balao = container(
             column![
-                text(&r_item.emoji).size(28),
+                text(&r_item.emoji).size(28).font(crate::tema::FONTE_EMOJI),
                 text(&r_item.quem).size(11).style(fraco),
             ]
             .spacing(2)

@@ -243,6 +243,12 @@ impl Entrega {
                 height: h as u32,
             }));
             self.avisou = true;
+            for _ in 0..50 {
+                if self.fonte.lock().unwrap().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         if self.quadro.buffer.width() as i32 != w || self.quadro.buffer.height() as i32 != h {
             log::info!("[tela] resolução mudou para {w}x{h}");
@@ -267,6 +273,20 @@ impl Entrega {
             if let Some(q) = reduz_para_previa(dados, stride, w as u32, h as u32) {
                 let _ = tx.send(q);
             }
+        }
+    }
+
+    fn reenvia_ultimo(&mut self) {
+        if !self.avisou {
+            return;
+        }
+        self.quadro.timestamp_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as i64;
+        if let Some(fonte) = self.fonte.lock().unwrap().as_ref() {
+            fonte.capture_frame(&self.quadro);
+            *self.quadros.lock().unwrap() += 1;
         }
     }
 }
@@ -307,6 +327,9 @@ fn laco_do_portal(
                 if portal.morreu() || (!recebeu && inicio.elapsed() > Duration::from_secs(8)) {
                     break;
                 }
+                if recebeu {
+                    ent.reenvia_ultimo();
+                }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -318,6 +341,82 @@ fn laco_do_portal(
     }
     log::warn!("[tela] o portal próprio não entregou imagem; usando o seletor do libwebrtc");
     false
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Roda o `DesktopCapturer` do libwebrtc (`Generic` no Wayland, `Screen` no X11).
+/// Devolve `true` se entregou ao menos um quadro ou foi parado por `rx_parar`.
+fn laco_do_capturador(
+    fps: u32,
+    cursor: bool,
+    x11: bool,
+    rx_parar: &mpsc::Receiver<()>,
+    ent: Arc<Mutex<Entrega>>,
+) -> bool {
+    let falhou_permanente = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let recebeu = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let falhou_cb = falhou_permanente.clone();
+    let recebeu_cb = recebeu.clone();
+    let ent_cb = ent.clone();
+    let callback = move |resultado: Result<DesktopFrame, CaptureError>| {
+        let f = match resultado {
+            Ok(f) => f,
+            Err(CaptureError::Temporary) => return,
+            Err(CaptureError::Permanent) => {
+                log::error!("[tela] a captura falhou de vez (seletor cancelado ou portal ausente)");
+                falhou_cb.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        };
+        recebeu_cb.store(true, std::sync::atomic::Ordering::Relaxed);
+        ent_cb
+            .lock()
+            .unwrap()
+            .recebe(f.data(), f.stride(), f.width() as i32, f.height() as i32);
+    };
+
+    let tipo = if x11 {
+        DesktopCaptureSourceType::Screen
+    } else {
+        DesktopCaptureSourceType::Generic
+    };
+    let mut opcoes = DesktopCapturerOptions::new(tipo);
+    opcoes.set_include_cursor(cursor);
+    let Some(mut capturador) = DesktopCapturer::new(opcoes) else {
+        log::error!("[tela] o libwebrtc não conseguiu criar o capturador (sem portal/PipeWire?)");
+        return false;
+    };
+    let fonte_x11 = if x11 {
+        capturador.get_source_list().into_iter().next()
+    } else {
+        None
+    };
+    if x11 {
+        match &fonte_x11 {
+            Some(f) => log::info!("[tela] X11: capturando {f}"),
+            None => log::warn!("[tela] X11: nenhuma tela listada"),
+        }
+    }
+    capturador.start_capture(fonte_x11, callback);
+    capturador.capture_frame();
+    if falhou_permanente.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+
+    let intervalo = Duration::from_millis(1000 / fps.clamp(1, 60) as u64);
+    loop {
+        if falhou_permanente.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        match rx_parar.recv_timeout(intervalo) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                log::info!("[tela] captura encerrada");
+                return true;
+            }
+            Err(RecvTimeoutError::Timeout) => capturador.capture_frame(),
+        }
+    }
+    recebeu.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -342,57 +441,17 @@ fn laco(
             return;
         }
     }
-    let mut ent = Entrega::nova(tx_res.clone(), fonte, quadros, previa);
-    let callback = move |resultado: Result<DesktopFrame, CaptureError>| {
-        let f = match resultado {
-            Ok(f) => f,
-            Err(CaptureError::Temporary) => return,
-            Err(CaptureError::Permanent) => {
-                log::error!("[tela] a captura falhou de vez (seletor cancelado ou portal ausente)");
-                ent.falhou();
-                return;
-            }
-        };
-        ent.recebe(f.data(), f.stride(), f.width() as i32, f.height() as i32);
-    };
-
-    // Wayland: `Generic` = diálogo do portal. X11 não tem portal obrigatório:
-    // o capturador de tela do libwebrtc lê o servidor X direto.
-    let tipo = if x11 {
-        DesktopCaptureSourceType::Screen
-    } else {
-        DesktopCaptureSourceType::Generic
-    };
-    let mut opcoes = DesktopCapturerOptions::new(tipo);
-    opcoes.set_include_cursor(cursor);
-    let Some(mut capturador) = DesktopCapturer::new(opcoes) else {
-        log::error!("[tela] o libwebrtc não conseguiu criar o capturador (sem portal/PipeWire?)");
-        let _ = tx_res.send(None);
+    let ent = Arc::new(Mutex::new(Entrega::nova(tx_res, fonte, quadros, previa)));
+    if laco_do_capturador(fps, cursor, x11, &rx_parar, ent.clone()) {
         return;
-    };
-    // No modo Generic a fonte é escolhida no diálogo do portal, não aqui; no
-    // X11 vai a primeira tela da lista.
-    let fonte_x11 = if x11 {
-        capturador.get_source_list().into_iter().next()
-    } else {
-        None
-    };
-    if x11 {
-        match &fonte_x11 {
-            Some(f) => log::info!("[tela] X11: capturando {f}"),
-            None => log::warn!("[tela] X11: nenhuma tela listada"),
+    }
+    if !x11 && std::env::var_os("DISPLAY").is_some() {
+        log::info!("[tela] portal indisponível; tentando captura X11 via DISPLAY");
+        if laco_do_capturador(fps, cursor, true, &rx_parar, ent.clone()) {
+            return;
         }
     }
-    capturador.start_capture(fonte_x11, callback);
-
-    let intervalo = Duration::from_millis(1000 / fps.clamp(1, 60) as u64);
-    loop {
-        match rx_parar.recv_timeout(intervalo) {
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => capturador.capture_frame(),
-        }
-    }
-    log::info!("[tela] captura encerrada");
+    ent.lock().unwrap().falhou();
 }
 
 #[cfg(test)]

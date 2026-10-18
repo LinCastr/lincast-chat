@@ -40,7 +40,8 @@ impl App {
                 if !self.deve_tocar() {
                     self.toque_sonoro = None;
                 } else if self.toque_sonoro.is_none() && self.prefs_conversas.som_do_toque {
-                    self.toque_sonoro = Some(som::ToqueSonoro::inicia());
+                    self.toque_sonoro =
+                        Some(som::ToqueSonoro::inicia(self.prefs_conversas.volume_toque));
                 }
                 if !havia_toque
                     && !self.janela_focada
@@ -64,6 +65,9 @@ impl App {
             }
             Msg::Sessao(Ok(Some(eu))) => {
                 self.eu = Some(eu);
+                if let Some(t) = &self.token {
+                    crate::relatorio::envia_anterior(&self.srv, t);
+                }
                 return self.vai_pras_salas();
             }
             Msg::Sessao(Ok(None)) => {
@@ -128,87 +132,6 @@ impl App {
                     l.erro = Some(e);
                 }
             }
-            Msg::IniciaDiscordLogin => {
-                if let Tela::Login(l) = &mut self.tela {
-                    let login_id = api::gera_login_id_seguro();
-                    l.aguardando_discord = true;
-                    l.discord_login_id = Some(login_id.clone());
-                    l.erro = None;
-
-                    let auth_url = format!("{}/auth/discord?loginId={}", self.srv.base, login_id);
-                    std::thread::spawn(move || {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(&auth_url)
-                            .output();
-                    });
-
-                    let id_para_tick = login_id.clone();
-                    return Task::perform(
-                        async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                            id_para_tick
-                        },
-                        Msg::TickPollDiscord,
-                    );
-                }
-            }
-            Msg::CancelaDiscordLogin => {
-                if let Tela::Login(l) = &mut self.tela {
-                    l.aguardando_discord = false;
-                    l.discord_login_id = None;
-                }
-            }
-            Msg::TickPollDiscord(login_id) => {
-                if let Tela::Login(l) = &self.tela
-                    && l.aguardando_discord
-                    && l.discord_login_id.as_deref() == Some(&login_id)
-                {
-                    let (srv, id) = (self.srv.clone(), login_id.clone());
-                    return em_segundo_plano(
-                        move || api::poll_login_discord(&srv, &id).map_err(|e| format!("{e:#}")),
-                        move |res| match res {
-                            Ok(token) => Msg::DiscordPollResultado {
-                                login_id: login_id.clone(),
-                                token,
-                            },
-                            Err(e) => {
-                                log::warn!("[discord-poll] erro na checagem: {e}");
-                                Msg::DiscordPollResultado {
-                                    login_id: login_id.clone(),
-                                    token: None,
-                                }
-                            }
-                        },
-                    );
-                }
-            }
-            Msg::DiscordPollResultado { login_id, token } => {
-                if let Tela::Login(l) = &mut self.tela
-                    && l.aguardando_discord
-                    && l.discord_login_id.as_deref() == Some(&login_id)
-                {
-                    if let Some(t) = token {
-                        l.aguardando_discord = false;
-                        l.discord_login_id = None;
-                        api::salva_sessao(Some(&t));
-                        self.token = Some(t.clone());
-                        let srv = self.srv.clone();
-                        return em_segundo_plano(
-                            move || api::eu(&srv, &t).map_err(|e| format!("{e:#}")),
-                            Msg::Sessao,
-                        );
-                    } else {
-                        let id_para_tick = login_id.clone();
-                        return Task::perform(
-                            async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                id_para_tick
-                            },
-                            Msg::TickPollDiscord,
-                        );
-                    }
-                }
-            }
 
             Msg::AbreSala(id) => {
                 let id = id.trim().to_string();
@@ -216,18 +139,29 @@ impl App {
                     return Task::none();
                 }
                 self.menu_status_aberto = false;
-                if let Tela::Sala(s) = &self.tela {
+                if self
+                    .chamada_ativa
+                    .as_ref()
+                    .is_some_and(|c| c.entrada.sala == id)
+                {
+                    self.avisos.marca_lida(&id);
+                    self.tela = Tela::Sala(self.chamada_ativa.take().unwrap());
+                    self.atualiza_bandeja();
+                    return Task::none();
+                }
+                if let Tela::Sala(s) = &mut self.tela {
                     if s.entrada.sala == id {
                         return Task::none();
                     }
-                    // A chamada pertence a esta sala: sair dela é decisão da pessoa.
                     if s.na_chamada {
-                        self.abrir_apos_sair = Some(Destino::Conversa(id));
-                        self.modal_confirmacao =
-                            Some(ui::confirmacao::TipoConfirmacao::SairChamada {
-                                sala: s.titulo.clone(),
-                            });
-                        return Task::none();
+                        let s = match std::mem::replace(
+                            &mut self.tela,
+                            Tela::Salas(Salas::default()),
+                        ) {
+                            Tela::Sala(s) => s,
+                            _ => unreachable!(),
+                        };
+                        self.chamada_ativa = Some(s);
                     }
                 }
                 let Some(token) = self.token.clone() else {
@@ -251,7 +185,7 @@ impl App {
                     fixadas_ativas: true,
                     painel: None,
                     wordle: None,
-                    wordle_grupo: None,
+                    wordle_grupo: Default::default(),
                     chamada_desde: None,
                     entrada: sala::Entrada {
                         servidor: self.srv.clone(),
@@ -331,6 +265,9 @@ impl App {
             Msg::Deslogar => {
                 self.modal_config = None;
                 self.editar_perfil_janela = false;
+                if let Some(ca) = self.chamada_ativa.take() {
+                    ca.manda(sala::Comando::SairDaChamada);
+                }
                 if let Some(t) = self.token.take() {
                     let srv = self.srv.clone();
                     std::thread::spawn(move || api::sai(&srv, &t));
@@ -342,7 +279,7 @@ impl App {
 
             Msg::Hover(id, dentro) => anim::hover(&id, dentro),
             Msg::AnimTick => anim::limpa(),
-            Msg::Sala(ev) => return self.evento_da_sala(ev),
+            Msg::SalaDe(id, ev) => return self.evento_da_sala_id(&id, ev),
             Msg::ConfirmaAcaoCritica => {
                 let acao = self.modal_confirmacao.take();
                 match acao {
@@ -356,6 +293,7 @@ impl App {
                         };
                     }
                     Some(ui::confirmacao::TipoConfirmacao::FecharAplicativo { .. }) => {
+                        crate::relatorio::envia_ao_fechar(&self.srv, self.token.as_deref());
                         return iced::exit();
                     }
                     Some(ui::confirmacao::TipoConfirmacao::ApagarGrupo { id, .. }) => {
@@ -530,6 +468,7 @@ impl App {
                             ])
                         });
                     } else {
+                        crate::relatorio::envia_ao_fechar(&self.srv, self.token.as_deref());
                         return iced::exit();
                     }
                 }
@@ -615,6 +554,7 @@ impl App {
             }
             Msg::PerfilCarregado(Err(e)) => {
                 log::warn!("Falha ao carregar perfil: {e}");
+                self.erro_global = Some(format!("Não consegui abrir o perfil: {e}"));
             }
             Msg::RascunhoNomePerfil(v) => {
                 if let Some(ed) = &mut self.modal_meu_perfil {
@@ -932,10 +872,16 @@ impl App {
             }
             Msg::PortalAtalho { acao, pressionado } => match (acao.as_str(), pressionado) {
                 ("ptt" | "push_to_talk", p) => return Task::done(Msg::PttTransmitindo(p)),
-                ("mute", true) if matches!(&self.tela, Tela::Sala(s) if s.na_chamada) => {
+                ("mute", true)
+                    if (matches!(&self.tela, Tela::Sala(s) if s.na_chamada)
+                        || self.chamada_ativa.is_some()) =>
+                {
                     return Task::done(Msg::AlternaMudo);
                 }
-                ("deaf", true) if matches!(&self.tela, Tela::Sala(s) if s.na_chamada) => {
+                ("deaf", true)
+                    if (matches!(&self.tela, Tela::Sala(s) if s.na_chamada)
+                        || self.chamada_ativa.is_some()) =>
+                {
                     return Task::done(Msg::AlternaSurdo);
                 }
                 ("answer", true) => {
@@ -943,7 +889,10 @@ impl App {
                         return Task::done(Msg::AtendeToque(t.conversa.clone()));
                     }
                 }
-                ("hangup", true) if matches!(&self.tela, Tela::Sala(s) if s.na_chamada) => {
+                ("hangup", true)
+                    if (matches!(&self.tela, Tela::Sala(s) if s.na_chamada)
+                        || self.chamada_ativa.is_some()) =>
+                {
                     return Task::done(Msg::SaiDaChamada);
                 }
                 _ => {}
@@ -969,6 +918,9 @@ impl App {
             Msg::AlternaNotificaMencoes => {
                 self.prefs_conversas.notificar_mencoes = !self.prefs_conversas.notificar_mencoes;
                 self.prefs_conversas.salva();
+            }
+            Msg::AlternaEnviarRelatorio => {
+                crate::relatorio::define_enviar(!crate::relatorio::enviar_ligado());
             }
             Msg::AlternaAutostart => {
                 crate::ui::configuracoes::alterna_autostart();
@@ -1006,12 +958,119 @@ impl App {
                 jogos_registrados::remove(&nome);
                 return Task::done(Msg::JogosRegAtualiza);
             }
+            Msg::JogosRegIniciaRenomear { exec, nome_atual } => {
+                self.jogos_reg_renomeando = Some((exec, nome_atual));
+            }
+            Msg::JogosRegRascunhoNome(n) => {
+                if let Some((_, r)) = &mut self.jogos_reg_renomeando {
+                    *r = n;
+                }
+            }
+            Msg::JogosRegCancelaRenomear => {
+                self.jogos_reg_renomeando = None;
+            }
+            Msg::JogosRegSalvaNome => {
+                if let Some((exec, novo_nome)) = self.jogos_reg_renomeando.take() {
+                    let novo_nome = novo_nome.trim().to_string();
+                    if !novo_nome.is_empty() {
+                        let (srv, token) = (self.srv.clone(), self.token.clone());
+                        let nome_busca = novo_nome.clone();
+                        let exec_c = exec.clone();
+                        return em_segundo_plano(
+                            move || {
+                                let achado = token
+                                    .as_ref()
+                                    .and_then(|t| api::busca_jogos(&srv, t, &nome_busca).ok());
+                                let melhor = achado.as_deref().and_then(|c| {
+                                    jogos_registrados::melhor_parecido(&nome_busca, c)
+                                });
+                                match melhor {
+                                    Some(j) => jogos_registrados::renomeia(
+                                        &exec_c,
+                                        j.nome.clone(),
+                                        Some(j.id),
+                                    ),
+                                    None => jogos_registrados::renomeia(&exec_c, nome_busca, None),
+                                }
+                            },
+                            |_| Msg::JogosRegAdicionado,
+                        );
+                    }
+                }
+            }
+            Msg::JogosRegAlternaAtivo(exec_ou_nome) => {
+                jogos_registrados::alterna_ativo(&exec_ou_nome);
+                self.jogos_reg = jogos_registrados::carrega();
+                return Task::done(Msg::VarreAtividade);
+            }
+            Msg::JogosRegAlternaSeletor => {
+                self.jogos_reg_seletor_aberto = !self.jogos_reg_seletor_aberto;
+                if self.jogos_reg_seletor_aberto && self.processos_abertos.is_empty() {
+                    self.processos_abertos = jogos_registrados::processos_abertos();
+                }
+            }
+            Msg::AbreVisaoJogo(j) => {
+                self.modal_visao_jogo = Some(j);
+            }
+            Msg::FechaVisaoJogo => {
+                self.modal_visao_jogo = None;
+            }
+            Msg::AbreFoto { url, titulo } => {
+                let cmd = if avatar::precisa_baixar(&url) {
+                    tarefas::baixa_imagem_de_perfil(
+                        self.srv.clone(),
+                        self.token.clone(),
+                        url.clone(),
+                    )
+                } else {
+                    Task::none()
+                };
+                self.modal_foto = Some(ModalFoto {
+                    url,
+                    titulo,
+                    zoom: 1.0,
+                });
+                return cmd;
+            }
+            Msg::FechaFoto => {
+                self.modal_foto = None;
+            }
+            Msg::ZoomFoto(delta) => {
+                if let Some(f) = &mut self.modal_foto {
+                    f.zoom = (f.zoom + delta).clamp(0.5, 4.0);
+                }
+            }
+            Msg::ResetaZoomFoto => {
+                if let Some(f) = &mut self.modal_foto {
+                    f.zoom = 1.0;
+                }
+            }
             Msg::AlternaSomDoToque => {
                 self.prefs_conversas.som_do_toque = !self.prefs_conversas.som_do_toque;
                 self.prefs_conversas.salva();
                 if !self.prefs_conversas.som_do_toque {
                     self.toque_sonoro = None;
                 }
+            }
+            Msg::DefineVolumeToque(v) => {
+                self.prefs_conversas.volume_toque = v.min(100);
+                self.prefs_conversas.salva();
+            }
+            Msg::DefineVolumeEfeitos(v) => {
+                let v = v.min(100);
+                self.prefs_conversas.volume_efeitos = v;
+                self.prefs_conversas.salva();
+                if let Tela::Sala(s) = &mut self.tela {
+                    s.soundboard.volume = v;
+                }
+            }
+            Msg::TestaToque => {
+                let vol = self.prefs_conversas.volume_toque;
+                std::thread::spawn(move || {
+                    let mut wav = som::sintetiza_toque();
+                    som::aplica_volume(&mut wav, vol);
+                    som::reproduz_wav(&wav);
+                });
             }
             Msg::RecusaToque(id) => {
                 if let Some(tx) = &self.avisos_cmd {
@@ -1350,6 +1409,9 @@ impl App {
                 }
             }
             Msg::AbreEditarPerfil => {
+                self.modal_outro_perfil = None;
+                self.menu_status_aberto = false;
+                self.menu_contexto = None;
                 self.editar_perfil_janela = true;
                 return Task::done(Msg::AbreConfiguracoes(Some(
                     ui::configuracoes::AbaConfig::Perfil,
@@ -1812,6 +1874,9 @@ impl App {
             }
             Msg::LigarConversa => {
                 if let Tela::Sala(s) = &mut self.tela {
+                    if let Some(ca) = self.chamada_ativa.take() {
+                        ca.manda(sala::Comando::SairDaChamada);
+                    }
                     let id = s.entrada.sala.clone();
                     if let Some(tx) = &self.avisos_cmd {
                         let _ = tx.send(avisos::Comando::Ligar(id));
@@ -1821,16 +1886,20 @@ impl App {
             }
             Msg::AbreAmigos => {
                 self.menu_status_aberto = false;
-                if let Tela::Sala(s) = &self.tela {
+                if let Tela::Sala(s) = &mut self.tela {
                     if s.na_chamada {
-                        self.abrir_apos_sair = Some(Destino::Amigos);
-                        self.modal_confirmacao =
-                            Some(ui::confirmacao::TipoConfirmacao::SairChamada {
-                                sala: s.titulo.clone(),
-                            });
-                        return Task::none();
+                        let s = match std::mem::replace(
+                            &mut self.tela,
+                            Tela::Salas(Salas::default()),
+                        ) {
+                            Tela::Sala(s) => s,
+                            _ => unreachable!(),
+                        };
+                        self.chamada_ativa = Some(s);
+                        self.atualiza_bandeja();
+                    } else {
+                        let _ = self.vai_pras_salas();
                     }
-                    let _ = self.vai_pras_salas();
                 }
                 if let Tela::Salas(s) = &mut self.tela {
                     s.aba = AbaSalas::Amigos;
@@ -1984,9 +2053,22 @@ impl App {
             Msg::VarreAtividade => {
                 return em_segundo_plano(atividade::detecta_atividade, Msg::AtividadeDetectada);
             }
-            Msg::AtividadeDetectada(nova) => {
+            Msg::AtividadeDetectada(mut nova) => {
                 if self.modal_config == Some(ui::configuracoes::AbaConfig::JogosRegistrados) {
                     self.jogos_reg = jogos_registrados::carrega();
+                }
+                // Preserva o início do jogo (desde) para não reiniciar a contagem de tempo
+                if let Some(jogo_novo) = nova.as_mut().and_then(|a| a.jogo.as_mut()) {
+                    if let Some(jogo_antigo) =
+                        self.atividade_atual.as_ref().and_then(|a| a.jogo.as_ref())
+                        && jogo_antigo.nome == jogo_novo.nome
+                        && jogo_antigo.desde.is_some()
+                    {
+                        jogo_novo.desde = jogo_antigo.desde;
+                    } else {
+                        let agora_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+                        jogo_novo.desde = Some(agora_ms);
+                    }
                 }
                 let mudou = nova != self.atividade_atual;
                 // O servidor expira a atividade em 90 s sem notícia: reenvia a
@@ -2047,9 +2129,15 @@ impl App {
             Msg::AbreConfiguracoes(aba_opt) => {
                 let aba = aba_opt.unwrap_or_default();
                 self.modal_config = Some(aba);
-                self.cameras = captura_camera::lista_cameras();
-                if self.camera_selecionada.is_none() {
-                    self.camera_selecionada = self.cameras.first().map(|c| c.indice);
+                self.modal_outro_perfil = None;
+                self.menu_status_aberto = false;
+                self.menu_contexto = None;
+
+                if aba == ui::configuracoes::AbaConfig::VozVideo {
+                    self.cameras = captura_camera::lista_cameras();
+                    if self.camera_selecionada.is_none() {
+                        self.camera_selecionada = self.cameras.first().map(|c| c.indice);
+                    }
                 }
                 if self.modal_meu_perfil.is_none()
                     && let Some(eu) = &self.eu
@@ -2082,9 +2170,22 @@ impl App {
                         jogos: Default::default(),
                     });
                 }
-                if let Tela::Sala(s) = &mut self.tela {
-                    s.manda(sala::Comando::AtualizaDispositivosAudio);
-                }
+                let tarefa_audio = if aba == ui::configuracoes::AbaConfig::VozVideo {
+                    if let Tela::Sala(s) = &mut self.tela {
+                        s.manda(sala::Comando::AtualizaDispositivosAudio);
+                        Task::none()
+                    } else if let Some(ca) = &mut self.chamada_ativa {
+                        ca.manda(sala::Comando::AtualizaDispositivosAudio);
+                        Task::none()
+                    } else {
+                        em_segundo_plano(
+                            dispositivos::lista_dispositivos_avulso,
+                            |(entradas, saidas)| Msg::DispositivosAvulsosLidos { entradas, saidas },
+                        )
+                    }
+                } else {
+                    Task::none()
+                };
                 // Minhas listas de jogos (o editor mostra e altera).
                 let listas = match (
                     &self.token,
@@ -2103,7 +2204,7 @@ impl App {
                     }
                     _ => Task::none(),
                 };
-                return Task::batch([
+                let tarefa_vol = if aba == ui::configuracoes::AbaConfig::VozVideo {
                     em_segundo_plano(
                         || {
                             (
@@ -2112,9 +2213,11 @@ impl App {
                             )
                         },
                         |(mic, saida)| Msg::VolumesSistemaLidos(mic, saida),
-                    ),
-                    listas,
-                ]);
+                    )
+                } else {
+                    Task::none()
+                };
+                return Task::batch([tarefa_vol, listas, tarefa_audio]);
             }
             Msg::FechaConfiguracoes => {
                 if self.painel_audio.testando_mic {
@@ -2122,6 +2225,8 @@ impl App {
                     self.painel_audio.nivel_mic = 0.0;
                     if let Tela::Sala(s) = &mut self.tela {
                         s.manda(sala::Comando::ParaTesteMic);
+                    } else if let Some(ca) = &mut self.chamada_ativa {
+                        ca.manda(sala::Comando::ParaTesteMic);
                     }
                 }
                 self.modal_config = None;
@@ -2129,14 +2234,116 @@ impl App {
             }
             Msg::TrocaAbaConfig(aba) => {
                 self.modal_config = Some(aba);
+                // Cada aba começa do topo (a rolagem era a mesma para todas).
+                let topo = iced::widget::operation::snap_to(
+                    ui::configuracoes::ID_ROLAGEM,
+                    iced::widget::scrollable::RelativeOffset::START,
+                );
                 if aba == ui::configuracoes::AbaConfig::JogosRegistrados {
-                    return Task::done(Msg::JogosRegAtualiza);
+                    return Task::batch([topo, Task::done(Msg::JogosRegAtualiza)]);
                 }
                 if aba == ui::configuracoes::AbaConfig::VozVideo {
-                    if let Tela::Sala(s) = &mut self.tela {
-                        s.manda(sala::Comando::AtualizaDispositivosAudio);
-                    }
                     self.cameras = captura_camera::lista_cameras();
+                    if self.camera_selecionada.is_none() {
+                        self.camera_selecionada = self.cameras.first().map(|c| c.indice);
+                    }
+                    // Os volumes do sistema também (antes só eram lidos ao abrir
+                    // as configurações já nesta aba).
+                    let volumes = em_segundo_plano(
+                        || {
+                            (
+                                sistema_audio::le_volume(true),
+                                sistema_audio::le_volume(false),
+                            )
+                        },
+                        |(mic, saida)| Msg::VolumesSistemaLidos(mic, saida),
+                    );
+                    let tarefa_audio = if let Tela::Sala(s) = &mut self.tela {
+                        s.manda(sala::Comando::AtualizaDispositivosAudio);
+                        Task::none()
+                    } else if let Some(ca) = &mut self.chamada_ativa {
+                        ca.manda(sala::Comando::AtualizaDispositivosAudio);
+                        Task::none()
+                    } else {
+                        em_segundo_plano(
+                            dispositivos::lista_dispositivos_avulso,
+                            |(entradas, saidas)| Msg::DispositivosAvulsosLidos { entradas, saidas },
+                        )
+                    };
+                    return Task::batch([topo, volumes, tarefa_audio]);
+                }
+                return topo;
+            }
+            Msg::DispositivosAvulsosLidos { entradas, saidas } => {
+                let cfg = dispositivos::carrega_config();
+                let entrada_sel = cfg
+                    .entrada_guid
+                    .or_else(|| entradas.first().map(|d| d.guid.clone()));
+                let saida_sel = cfg
+                    .saida_guid
+                    .or_else(|| saidas.first().map(|d| d.guid.clone()));
+                self.painel_audio.entradas = entradas;
+                self.painel_audio.saidas = saidas;
+                if self.painel_audio.entrada_selecionada.is_none() {
+                    self.painel_audio.entrada_selecionada = entrada_sel;
+                }
+                if self.painel_audio.saida_selecionada.is_none() {
+                    self.painel_audio.saida_selecionada = saida_sel;
+                }
+            }
+            Msg::SelecionaEntradaAudio(guid) => {
+                self.painel_audio.entrada_selecionada = Some(guid.clone());
+                dispositivos::salva_dispositivo_gravacao(&guid);
+                if let Tela::Sala(s) = &mut self.tela {
+                    if let Some(pa) = &mut s.painel_audio {
+                        pa.entrada_selecionada = Some(guid.clone());
+                    }
+                    s.manda(sala::Comando::SelecionaDispositivoGravacao(guid));
+                } else if let Some(ca) = &mut self.chamada_ativa {
+                    if let Some(pa) = &mut ca.painel_audio {
+                        pa.entrada_selecionada = Some(guid.clone());
+                    }
+                    ca.manda(sala::Comando::SelecionaDispositivoGravacao(guid));
+                }
+            }
+            Msg::SelecionaSaidaAudio(guid) => {
+                self.painel_audio.saida_selecionada = Some(guid.clone());
+                dispositivos::salva_dispositivo_reproducao(&guid);
+                if let Tela::Sala(s) = &mut self.tela {
+                    if let Some(pa) = &mut s.painel_audio {
+                        pa.saida_selecionada = Some(guid.clone());
+                    }
+                    s.manda(sala::Comando::SelecionaDispositivoReproducao(guid));
+                } else if let Some(ca) = &mut self.chamada_ativa {
+                    if let Some(pa) = &mut ca.painel_audio {
+                        pa.saida_selecionada = Some(guid.clone());
+                    }
+                    ca.manda(sala::Comando::SelecionaDispositivoReproducao(guid));
+                }
+            }
+            Msg::AlternaTesteMic => {
+                self.painel_audio.testando_mic = !self.painel_audio.testando_mic;
+                let testando = self.painel_audio.testando_mic;
+                if let Tela::Sala(s) = &mut self.tela {
+                    if let Some(pa) = &mut s.painel_audio {
+                        pa.testando_mic = testando;
+                    }
+                    if testando {
+                        s.manda(sala::Comando::IniciaTesteMic);
+                    } else {
+                        self.painel_audio.nivel_mic = 0.0;
+                        s.manda(sala::Comando::ParaTesteMic);
+                    }
+                } else if let Some(ca) = &mut self.chamada_ativa {
+                    if let Some(pa) = &mut ca.painel_audio {
+                        pa.testando_mic = testando;
+                    }
+                    if testando {
+                        ca.manda(sala::Comando::IniciaTesteMic);
+                    } else {
+                        self.painel_audio.nivel_mic = 0.0;
+                        ca.manda(sala::Comando::ParaTesteMic);
+                    }
                 }
             }
             Msg::SelecionaCameraConfig(idx) => {
@@ -2233,10 +2440,10 @@ impl App {
                     if s.na_chamada {
                         Some(s.titulo.clone())
                     } else {
-                        None
+                        self.chamada_ativa.as_ref().map(|c| c.titulo.clone())
                     }
                 } else {
-                    None
+                    self.chamada_ativa.as_ref().map(|c| c.titulo.clone())
                 };
                 if let Some(sala) = em_chamada {
                     self.modal_confirmacao =
@@ -2245,12 +2452,14 @@ impl App {
                         });
                     return Task::none();
                 } else {
+                    crate::relatorio::envia_ao_fechar(&self.srv, self.token.as_deref());
                     return iced::exit();
                 }
             }
             Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key,
                 modifiers,
+                physical_key,
                 ..
             })) if self.capturando_atalho.is_some() => {
                 let acao = self.capturando_atalho.clone().unwrap_or_default();
@@ -2259,7 +2468,9 @@ impl App {
                     iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
                 ) {
                     self.capturando_atalho = None;
-                } else if let Some(combo) = atalhos::combo_de_evento(&key, modifiers) {
+                } else if let Some(combo) =
+                    atalhos::combo_de_evento_completo(&key, Some(&physical_key), modifiers)
+                {
                     if let Some(outra) = self.atalhos.acao_de(&combo, &acao) {
                         self.aviso_atalho = Some(format!(
                             "{combo} já está em uso por \"{}\".",
@@ -2298,6 +2509,24 @@ impl App {
             Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                 ..
+            })) if self.modal_foto.is_some() => {
+                self.modal_foto = None;
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            })) if self.modal_visao_jogo.is_some() => {
+                self.modal_visao_jogo = None;
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            })) if self.jogos_reg_renomeando.is_some() => {
+                self.jogos_reg_renomeando = None;
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
             })) if self.modal_config.is_some()
                 || self.modal_editar_grupo.is_some()
                 || self.modal_grupo.is_some()
@@ -2329,9 +2558,14 @@ impl App {
                 self.modal_outro_perfil = None;
                 self.modal_confirmacao = None;
                 self.modal_manual_aberto = false;
+                self.modal_foto = None;
+                self.modal_visao_jogo = None;
+                self.jogos_reg_renomeando = None;
+                self.jogos_reg_seletor_aberto = false;
             }
             Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key,
+                physical_key,
                 ..
             })) if self.capturando_ptt => {
                 if matches!(
@@ -2342,7 +2576,9 @@ impl App {
                     if let Tela::Sala(s) = &mut self.tela {
                         s.capturando_ptt = false;
                     }
-                } else if let Some((id, rotulo)) = ptt::descreve_tecla(&key) {
+                } else if let Some((id, rotulo)) =
+                    ptt::descreve_tecla_completa(&key, Some(&physical_key))
+                {
                     self.ptt.tecla = id;
                     self.ptt.rotulo = rotulo;
                     ptt::salva_config(&self.ptt);
@@ -2351,6 +2587,158 @@ impl App {
                         s.ptt = self.ptt.clone();
                         s.capturando_ptt = false;
                     }
+                }
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                physical_key,
+                ..
+            })) if self.modal_config.is_none()
+                && self.modal_meu_perfil.is_none()
+                && self.modal_outro_perfil.is_none()
+                && self.modal_editar_grupo.is_none()
+                && self.modal_grupo.is_none()
+                && self.modal_confirmacao.is_none()
+                && self.capturando_atalho.is_none()
+                && !self.capturando_ptt
+                && atalhos::combo_de_evento_completo(&key, Some(&physical_key), modifiers)
+                    .as_deref()
+                    .and_then(|c| self.atalhos.acao_na_janela(c))
+                    .is_some() =>
+            {
+                let combo = atalhos::combo_de_evento_completo(&key, Some(&physical_key), modifiers)
+                    .unwrap();
+                let acao = self.atalhos.acao_na_janela(&combo).unwrap();
+                return Task::done(Msg::PortalAtalho {
+                    acao: acao.to_string(),
+                    pressionado: true,
+                });
+            }
+            // Chamada em segundo plano: a sala aberta não é a da chamada, então
+            // apertar e soltar a tecla do PTT são tratados aqui (os dois com a
+            // mesma tecla; antes apertar usava o atalho e soltar o `ptt.json`).
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                repeat: false,
+                ..
+            })) if self.ptt.ativo
+                && self.chamada_ativa.is_some()
+                && self.capturando_atalho.is_none()
+                && !self.capturando_ptt
+                && ptt::corresponde_completo(&self.ptt.tecla, &key, Some(&physical_key)) =>
+            {
+                return Task::done(Msg::PttTransmitindo(true));
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                key,
+                physical_key,
+                ..
+            })) if self.ptt.ativo
+                && self.chamada_ativa.is_some()
+                && ptt::corresponde_completo(&self.ptt.tecla, &key, Some(&physical_key)) =>
+            {
+                return Task::done(Msg::PttTransmitindo(false));
+            }
+            Msg::AlternaMudo => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    let res = s.update(Msg::AlternaMudo);
+                    self.atualiza_bandeja();
+                    return res;
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    ca.mudo = !ca.mudo;
+                    ca.manda(sala::Comando::Mudo(ca.mudo));
+                    self.atualiza_bandeja();
+                }
+            }
+            Msg::AlternaSurdo => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    let res = s.update(Msg::AlternaSurdo);
+                    self.atualiza_bandeja();
+                    return res;
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    ca.surdo = !ca.surdo;
+                    ca.manda(sala::Comando::Surdo(ca.surdo));
+                    self.atualiza_bandeja();
+                }
+            }
+            Msg::SaiDaChamada => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    let res = s.update(Msg::SaiDaChamada);
+                    self.atualiza_bandeja();
+                    return res;
+                }
+                if let Some(ca) = self.chamada_ativa.take() {
+                    ca.manda(sala::Comando::SairDaChamada);
+                    self.atualiza_bandeja();
+                }
+            }
+            Msg::PttTransmitindo(p) => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    return s.update(Msg::PttTransmitindo(p));
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    ca.ptt_transmitindo = p;
+                    ca.manda(sala::Comando::PttTransmitindo(p));
+                }
+            }
+            Msg::ParaCamera => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    return s.update(Msg::ParaCamera);
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    ca.manda(sala::Comando::PararCamera);
+                    ca.com_camera = false;
+                }
+            }
+            Msg::PedeCamera => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    return s.update(Msg::PedeCamera);
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    let indice = self.camera_selecionada.unwrap_or(0);
+                    ca.manda(sala::Comando::IniciarCamera { indice });
+                    ca.com_camera = true;
+                }
+            }
+            Msg::ParaTela => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    return s.update(Msg::ParaTela);
+                }
+                if let Some(ca) = &mut self.chamada_ativa {
+                    ca.manda(sala::Comando::PararTela);
+                    ca.apresentando = false;
+                }
+            }
+            Msg::PedeTela => {
+                if let Tela::Sala(s) = &mut self.tela
+                    && s.na_chamada
+                {
+                    return s.update(Msg::PedeTela);
+                }
+                if let Some(ca) = self.chamada_ativa.take() {
+                    let id = ca.entrada.sala.clone();
+                    self.avisos.marca_lida(&id);
+                    self.tela = Tela::Sala(ca);
+                    self.atualiza_bandeja();
+                    return Task::done(Msg::PedeTela);
                 }
             }
             other => {

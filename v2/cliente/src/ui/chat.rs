@@ -2,8 +2,8 @@
 
 use ::image::ImageEncoder as _;
 use base64::Engine as _;
-use iced::widget::{button, column, container, image, row, space, svg, text, text_input};
-use iced::{Alignment, Element, Length};
+use iced::widget::{Column, button, column, container, image, row, space, svg, text, text_input};
+use iced::{Alignment, Background, Border, Element, Length};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -304,13 +304,19 @@ pub fn barra_reacoes_mensagem<'a>(
     let mut linha = row![].spacing(4).align_y(Alignment::Center);
     for (emoji, quem) in itens {
         let eh_meu = quem.iter().any(|n| n == meu_nome);
-        let texto_pill = format!("{} {}", emoji, quem.len());
-        let mut btn = button(text(texto_pill).size(12))
-            .padding([2, 6])
-            .on_press(Msg::ReagirChat {
-                id: id.to_string(),
-                emoji: emoji.to_string(),
-            });
+        let mut btn = button(
+            row![
+                text(emoji.as_str()).size(15).font(tema::FONTE_EMOJI),
+                text(quem.len()).size(12),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([2, 6])
+        .on_press(Msg::ReagirChat {
+            id: id.to_string(),
+            emoji: emoji.to_string(),
+        });
 
         if eh_meu {
             btn = btn.style(tema::botao_primario);
@@ -321,10 +327,15 @@ pub fn barra_reacoes_mensagem<'a>(
     }
 
     linha = linha.push(
-        button(svg(icones::smile()).width(12).height(12))
-            .padding([3, 5])
-            .style(tema::botao_secundario)
-            .on_press(Msg::AlternaSeletorReacao(id.to_string())),
+        button(
+            svg(icones::smile())
+                .width(14)
+                .height(14)
+                .style(tema::icone_cor(tema::cores().texto_medio)),
+        )
+        .padding([3, 5])
+        .style(tema::botao_secundario)
+        .on_press(Msg::AlternaSeletorReacao(id.to_string())),
     );
 
     Some(linha.into())
@@ -335,7 +346,7 @@ pub fn seletor_rapido_emoji<'a>(id: &'a str) -> Element<'a, Msg> {
     let mut grade = row![].spacing(3).align_y(Alignment::Center);
     for &emoji in EMOJIS_PERMITIDOS.iter().take(8) {
         grade = grade.push(
-            button(text(emoji).size(15))
+            button(text(emoji).size(15).font(crate::tema::FONTE_EMOJI))
                 .padding([2, 5])
                 .style(tema::botao_secundario)
                 .on_press(Msg::ReagirChat {
@@ -527,27 +538,38 @@ pub fn renderiza_bloco_codigo<'a>(linguagem: &'a str, codigo: &'a str) -> Elemen
         .into()
 }
 
-/// Renderiza uma linha de texto com links clicáveis destacados.
-pub fn renderiza_texto_com_links<'a>(texto: &'a str) -> Element<'a, Msg> {
-    let segmentos = separa_links(texto);
-    let mut linha = row![].spacing(3).align_y(Alignment::Center);
-
-    for s in segmentos {
+/// Texto da mensagem: links clicáveis no meio do texto (quebrando a linha
+/// junto, como no Discord), emoji colorido e o "(editada)" no fim. Mensagem só
+/// de emoji (até 27) sai grande.
+pub fn renderiza_texto_com_links<'a>(texto: &'a str, editada: bool) -> Element<'a, Msg> {
+    use iced::widget::span;
+    let c = tema::cores();
+    let so_emoji = !texto.trim().is_empty()
+        && texto
+            .chars()
+            .all(|ch| ch.is_whitespace() || tema::eh_emoji(ch))
+        && texto.chars().filter(|ch| !ch.is_whitespace()).count() <= 27;
+    let mut spans: Vec<iced::widget::text::Span<'a, String>> = Vec::new();
+    for s in separa_links(texto) {
         match s {
             SegmentoTexto::Texto(t) => {
-                linha = linha.push(text(t).size(tema::TEXTO_CHAT));
+                for (e, pedaco) in tema::trechos_de_emoji(t) {
+                    let sp = span(pedaco);
+                    spans.push(if e { sp.font(tema::FONTE_EMOJI) } else { sp });
+                }
             }
             SegmentoTexto::Link(url) => {
-                let btn = button(text(url).size(tema::TEXTO_CHAT).style(destaque))
-                    .padding([0, 2])
-                    .style(tema::botao_secundario)
-                    .on_press(Msg::AbreLink(url.to_string()));
-                linha = linha.push(btn);
+                spans.push(span(url).color(c.destaque).link(url.to_string()));
             }
         }
     }
-
-    linha.into()
+    if editada {
+        spans.push(span(" (editada)").size(11).color(c.texto_medio));
+    }
+    iced::widget::rich_text(spans)
+        .size(if so_emoji { 44.0 } else { tema::TEXTO_CHAT })
+        .on_link_click(Msg::AbreLink)
+        .into()
 }
 
 /// Tag visual `(editada)` exibida ao lado do texto da mensagem.
@@ -1069,14 +1091,160 @@ pub fn renderiza_enquete<'a>(
         .into()
 }
 
-/// Resultado da interpretação de comandos do chat (/rolar, /sortear, /enquete).
+/// Resultado da interpretação de comandos do chat (/rolar, /sortear, /enquete, /wordle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComandoChatResultado {
     MensagemTexto(String),
     CriarEnquete(crate::sala::Enquete),
     /// `/wordle`: abre o jogo do dia (e garante a mensagem na conversa).
     AbreWordle,
+    /// [DEV] Sorteia uma nova palavra para o Wordle de hoje para todos os jogadores.
+    WordleTrocaPalavra,
     Erro(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SugestaoComando {
+    pub nome: &'static str,
+    pub sintaxe: &'static str,
+    pub descricao: &'static str,
+    pub preenche: &'static str,
+}
+
+/// Detecta se o rascunho atual começou com `/` para autocompletar comando.
+pub fn detecta_comando_rascunho(rascunho: &str) -> Option<&str> {
+    let limpo = rascunho.trim_start();
+    if limpo.starts_with('/') && !limpo.contains(' ') {
+        Some(&limpo[1..])
+    } else {
+        None
+    }
+}
+
+/// Filtra os comandos disponíveis para sugestão no chat.
+pub fn filtra_comandos_chat(filtro: &str, eh_dev: bool, eh_grupo: bool) -> Vec<SugestaoComando> {
+    let f = filtro.to_lowercase();
+    let mut todos = Vec::new();
+
+    if eh_grupo {
+        todos.push(SugestaoComando {
+            nome: "/wordle",
+            sintaxe: "/wordle",
+            descricao: "Abre o jogo Wordle do dia",
+            preenche: "/wordle",
+        });
+    }
+
+    todos.extend([
+        SugestaoComando {
+            nome: "/rolar",
+            sintaxe: "/rolar 2d20",
+            descricao: "Rola dados de RPG (ex: 2d6, 1d20)",
+            preenche: "/rolar ",
+        },
+        SugestaoComando {
+            nome: "/sortear",
+            sintaxe: "/sortear pizza | sushi",
+            descricao: "Sorteia entre opções separadas por |",
+            preenche: "/sortear ",
+        },
+        SugestaoComando {
+            nome: "/enquete",
+            sintaxe: "/enquete Pergunta? | Opção 1 | Opção 2",
+            descricao: "Cria uma enquete de votação interativa",
+            preenche: "/enquete ",
+        },
+    ]);
+
+    if eh_dev && eh_grupo {
+        todos.push(SugestaoComando {
+            nome: "/wordle-trocar",
+            sintaxe: "/wordle-trocar",
+            descricao: "[DEV] Sorteia uma nova palavra do Wordle hoje para todos",
+            preenche: "/wordle-trocar",
+        });
+    }
+
+    todos
+        .into_iter()
+        .filter(|c| c.nome[1..].starts_with(&f))
+        .collect()
+}
+
+/// Menu flutuante que exibe os comandos ao digitar `/` no chat.
+pub fn menu_comandos_chat<'a>(comandos: &[SugestaoComando]) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let mut lista = Column::new().spacing(3);
+
+    for cmd in comandos {
+        let icone = match cmd.nome {
+            "/wordle" => icones::controle(),
+            "/rolar" => icones::dados(),
+            "/sortear" => icones::roda(),
+            "/enquete" => icones::grafico(),
+            _ => icones::lapis(),
+        };
+
+        let btn = button(
+            row![
+                svg(icone)
+                    .width(16)
+                    .height(16)
+                    .style(tema::icone_cor(c.destaque)),
+                column![
+                    row![
+                        text(cmd.nome).size(13).font(negrito()),
+                        space().width(6),
+                        text(cmd.sintaxe).size(12).style(fraco),
+                    ]
+                    .align_y(Alignment::Center),
+                    text(cmd.descricao).size(11).style(fraco),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                text("Comando").size(11).style(fraco),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([6, 10])
+        .style(tema::item_de_lista)
+        .on_press(Msg::AplicaComandoChat(cmd.preenche.to_string()));
+
+        lista = lista.push(btn);
+    }
+
+    container(
+        column![
+            row![
+                svg(icones::ajustes())
+                    .width(13)
+                    .height(13)
+                    .style(tema::icone_cor(c.texto_fraco)),
+                text("COMANDOS DISPONÍVEIS")
+                    .size(10)
+                    .font(negrito())
+                    .style(fraco),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+            lista,
+        ]
+        .spacing(6)
+        .padding(8),
+    )
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(c.elevado)),
+        border: Border {
+            color: c.borda,
+            width: 1.0,
+            radius: tema::RAIO_GRANDE.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// Analisa e processa comandos com prefixo `/` digitados no chat.
@@ -1091,6 +1259,9 @@ pub fn processa_comando_chat(entrada: &str) -> Option<ComandoChatResultado> {
     };
     match cmd.as_str() {
         "/wordle" => Some(ComandoChatResultado::AbreWordle),
+        "/wordle-trocar" | "/wordle-novo" | "/wordle-reset" => {
+            Some(ComandoChatResultado::WordleTrocaPalavra)
+        }
         "/rolar" | "/dados" => {
             if resto.is_empty() {
                 return Some(ComandoChatResultado::Erro("Uso: /rolar 2d6".into()));

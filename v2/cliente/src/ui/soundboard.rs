@@ -93,10 +93,7 @@ fn icone_do_som(id: &str) -> svg::Handle {
 /// Renderiza o painel completo do soundboard da sala.
 pub fn painel_soundboard<'a>(estado: &'a EstadoSoundboard) -> Element<'a, Msg> {
     let c = tema::cores();
-    let titulo = text("Soundboard da Sala")
-        .size(13)
-        .font(negrito())
-        .style(destaque);
+    let titulo = text("Soundboard").size(13).font(negrito()).style(destaque);
 
     let botao_mudo = button(
         row![
@@ -133,22 +130,26 @@ pub fn painel_soundboard<'a>(estado: &'a EstadoSoundboard) -> Element<'a, Msg> {
         .align_y(Alignment::Center);
 
     // Volume de quem solta: vale para todos que ouvem.
-    let volume = row![
-        crate::ui::efeitos::ico(icones::volume_baixo(), 14.0, c.texto_medio),
-        slider(0..=100u8, estado.volume, Msg::VolumeSoundboard)
-            .on_release(Msg::SalvaVolumeSoundboard)
-            .style(tema::estilo_slider)
-            .width(Length::Fixed(170.0)),
-        text(format!("{}%", estado.volume))
-            .size(11)
-            .width(34)
-            .style(fraco),
+    // Rótulo em cima do slider: ao lado ele saía cortado na borda do popup.
+    let volume = column![
         text("Volume dos sons que você solta (todos ouvem igual)")
             .size(11)
             .style(fraco),
+        row![
+            crate::ui::efeitos::ico(icones::volume_baixo(), 14.0, c.texto_medio),
+            slider(0..=100u8, estado.volume, Msg::VolumeSoundboard)
+                .on_release(Msg::SalvaVolumeSoundboard)
+                .style(tema::estilo_slider)
+                .width(Length::Fill),
+            text(format!("{}%", estado.volume))
+                .size(11)
+                .width(34)
+                .style(fraco),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
-    .spacing(8)
-    .align_y(Alignment::Center);
+    .spacing(4);
 
     // Grade dos 10 sons organizados em 2 linhas de 5 botões
     let mut linha1 = row![].spacing(6).align_y(Alignment::Center);
@@ -174,13 +175,14 @@ pub fn painel_soundboard<'a>(estado: &'a EstadoSoundboard) -> Element<'a, Msg> {
         }
     }
 
-    let dica = text("Um som a cada 2s. Botão de som nos participantes silencia individualmente.")
-        .size(11)
-        .style(fraco);
+    let dica = text("Um som a cada 2 s.").size(11).style(fraco);
 
     let painel = column![topo, volume, linha1, linha2, dica].spacing(8);
 
+    // Largura fixa: o slider ocupa o que sobra (com `Fill` solto o popup
+    // crescia até sair da tela).
     container(painel)
+        .width(470)
         .padding([8, 12])
         .style(tema::painel_lateral)
         .into()

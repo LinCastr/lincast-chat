@@ -66,7 +66,10 @@ pub fn modal<'a>(est: &'a EstadoStatusCustom) -> Element<'a, Msg> {
     let botao_emoji = button(if est.emoji.is_empty() {
         ico(icones::smile(), 18.0, c.texto_medio)
     } else {
-        text(est.emoji.clone()).size(18).into()
+        text(est.emoji.clone())
+            .size(18)
+            .font(crate::tema::FONTE_EMOJI)
+            .into()
     })
     .padding([8, 10])
     .style(tema::botao_icone(false, false))
@@ -101,7 +104,7 @@ pub fn modal<'a>(est: &'a EstadoStatusCustom) -> Element<'a, Msg> {
 
     if est.emojis_abertos {
         let grade = row(EMOJIS.iter().map(|e| -> Element<'a, Msg> {
-            button(text(*e).size(20))
+            button(text(*e).size(20).font(crate::tema::FONTE_EMOJI))
                 .padding([4, 6])
                 .style(tema::botao_icone(false, false))
                 .on_press(Msg::StatusCustomEmoji((*e).to_string()))

@@ -98,7 +98,9 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
     let custom = d.custom.filter(|s| !s.vencido());
     let conteudo_bolha: Element<'a, Msg> = match custom {
         Some(sc) => row![
-            text(sc.emoji.clone()).size(13),
+            text(sc.emoji.clone())
+                .size(13)
+                .font(crate::tema::FONTE_EMOJI),
             text(sc.texto.clone()).size(12)
         ]
         .spacing(6)

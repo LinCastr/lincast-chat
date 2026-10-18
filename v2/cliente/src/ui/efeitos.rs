@@ -45,12 +45,16 @@ pub fn botao_icone_anim<'a>(
     };
     let miolo: Element<'a, Msg> = if efeito == Efeito::EmojiAleatorio && anim::dentro(id) {
         // Colorido enquanto o mouse está em cima; volta ao ícone ao sair.
-        container(text(anim::emoji(id)).size(16))
-            .width(18)
-            .height(18)
-            .center_x(18)
-            .center_y(18)
-            .into()
+        container(
+            text(anim::emoji(id))
+                .size(16)
+                .font(crate::tema::FONTE_EMOJI),
+        )
+        .width(18)
+        .height(18)
+        .center_x(18)
+        .center_y(18)
+        .into()
     } else {
         let angulo = match efeito {
             Efeito::Balanco => anim::balanco(id),

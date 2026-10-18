@@ -7,8 +7,8 @@ use iced::widget::column;
 /// diferente de "ninguém tocando", e dizer a segunda coisa no lugar da
 /// primeira esconde o defeito (aconteceu com um concord-audio desatualizado).
 pub(crate) fn lista_apps_tocando() -> Result<Vec<AppTocando>, String> {
-    let eu = std::env::current_exe().map_err(|e| e.to_string())?;
-    let bin = eu.with_file_name("concord-audio");
+    let bin = crate::portal_tela::acha_concord_audio()
+        .ok_or("o concord-audio não foi achado: reinstale o app")?;
     let saida = std::process::Command::new(&bin)
         .args(["listar", "--json"])
         .output()
@@ -49,7 +49,6 @@ pub(crate) fn lista_apps_tocando() -> Result<Vec<AppTocando>, String> {
 // --- telas de fora da sala --------------------------------------------------
 
 pub(crate) fn tela_login<'a>(l: &'a Login, srv: &'a Servidor) -> Element<'a, Msg> {
-    let c = tema::cores();
     let mut col = column![
         image(image::Handle::from_bytes(
             include_bytes!("../assets/logo-96.png").as_slice()
@@ -62,105 +61,62 @@ pub(crate) fn tela_login<'a>(l: &'a Login, srv: &'a Servidor) -> Element<'a, Msg
     .spacing(6)
     .width(320);
 
-    if l.aguardando_discord {
-        col = col.push(space().height(6));
-        col = col.push(
-            row![
-                svg(icones::discord())
-                    .width(24)
-                    .height(24)
-                    .style(tema::icone_cor(c.destaque)),
-                text("Autorização com Discord").size(15).font(negrito()),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
-        col = col.push(
-            text("Uma aba foi aberta no seu navegador padrão para autorizar.\nAssim que você confirmar lá, o app entrará sozinho.")
-                .size(13)
-                .style(fraco),
-        );
-        col = col.push(space().height(8));
-        col = col.push(
-            button(center(text("Cancelar").size(14)).height(20))
-                .width(Length::Fill)
-                .padding(9)
-                .style(tema::botao_secundario)
-                .on_press(Msg::CancelaDiscordLogin),
-        );
-    } else {
-        let titulo = if l.criando { "Criar conta" } else { "Entrar" };
-        let pode = !l.enviando
-            && !l.usuario.trim().is_empty()
-            && l.senha.len() >= if l.criando { 8 } else { 1 };
+    let titulo = if l.criando { "Criar conta" } else { "Entrar" };
+    let pode = !l.enviando
+        && !l.usuario.trim().is_empty()
+        && l.senha.len() >= if l.criando { 8 } else { 1 };
 
-        col = col.push(text(titulo).size(15).style(fraco));
-        col = col.push(space().height(8));
-        col = col.push(rotulo("Nome de usuário"));
-        col = col.push(
-            text_input("", &l.usuario)
-                .on_input(Msg::Usuario)
-                .on_submit(Msg::Entrar)
-                .padding(10)
-                .size(14)
-                .style(tema::campo),
-        );
-        col = col.push(rotulo(if l.criando {
-            "Senha (8 caracteres ou mais)"
-        } else {
-            "Senha"
-        }));
-        col = col.push(
-            text_input("", &l.senha)
-                .secure(true)
-                .on_input(Msg::Senha)
-                .on_submit(Msg::Entrar)
-                .padding(10)
-                .size(14)
-                .style(tema::campo),
-        );
-        col = col.push(space().height(4));
-        col = col.push(
-            button(center(text(if l.enviando { "Aguarde…" } else { titulo }).size(14)).height(20))
-                .width(Length::Fill)
-                .padding(9)
-                .style(tema::botao_primario)
-                .on_press_maybe(pode.then_some(Msg::Entrar)),
-        );
-        col = col.push(
-            button(
-                text(if l.criando {
-                    "Já tenho conta"
-                } else {
-                    "Criar uma conta"
-                })
-                .size(13),
-            )
-            .padding([4, 0])
-            .style(|t, s| {
-                let mut e = tema::item_de_lista(t, s);
-                e.background = None;
-                e.text_color = tema::cores().texto_fraco;
-                e
-            })
-            .on_press(Msg::AlternaCriar),
-        );
-        col = col.push(linha_horizontal());
-        col = col.push(
-            button(
-                row![
-                    svg(icones::discord()).width(18).height(18),
-                    text("Entrar com Discord").size(14).font(negrito()),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
+    col = col.push(text(titulo).size(15).style(fraco));
+    col = col.push(space().height(8));
+    col = col.push(rotulo("Nome de usuário"));
+    col = col.push(
+        text_input("", &l.usuario)
+            .on_input(Msg::Usuario)
+            .on_submit(Msg::Entrar)
+            .padding(10)
+            .size(14)
+            .style(tema::campo),
+    );
+    col = col.push(rotulo(if l.criando {
+        "Senha (8 caracteres ou mais)"
+    } else {
+        "Senha"
+    }));
+    col = col.push(
+        text_input("", &l.senha)
+            .secure(true)
+            .on_input(Msg::Senha)
+            .on_submit(Msg::Entrar)
+            .padding(10)
+            .size(14)
+            .style(tema::campo),
+    );
+    col = col.push(space().height(4));
+    col = col.push(
+        button(center(text(if l.enviando { "Aguarde…" } else { titulo }).size(14)).height(20))
             .width(Length::Fill)
-            .padding([9, 14])
-            .style(tema::botao_secundario)
-            .on_press(Msg::IniciaDiscordLogin),
-        );
-    }
+            .padding(9)
+            .style(tema::botao_primario)
+            .on_press_maybe(pode.then_some(Msg::Entrar)),
+    );
+    col = col.push(
+        button(
+            text(if l.criando {
+                "Já tenho conta"
+            } else {
+                "Criar uma conta"
+            })
+            .size(13),
+        )
+        .padding([4, 0])
+        .style(|t, s| {
+            let mut e = tema::item_de_lista(t, s);
+            e.background = None;
+            e.text_color = tema::cores().texto_fraco;
+            e
+        })
+        .on_press(Msg::AlternaCriar),
+    );
     if let Some(e) = &l.erro {
         col = col.push(aviso(e.clone(), None));
     }
@@ -235,7 +191,7 @@ pub(crate) fn negrito() -> Font {
 
 pub(crate) fn fraco(_: &iced::Theme) -> text::Style {
     text::Style {
-        color: Some(tema::cores().texto_fraco),
+        color: Some(tema::cores().texto_medio),
     }
 }
 

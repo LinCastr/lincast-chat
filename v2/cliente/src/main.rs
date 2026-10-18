@@ -27,6 +27,7 @@ mod jogos_registrados;
 mod portal_tela;
 mod prefs_conversas;
 mod ptt;
+mod relatorio;
 mod sala;
 mod sala_update;
 mod sala_view;
@@ -63,11 +64,18 @@ fn main() -> iced::Result {
         unsafe { std::env::set_var("WGPU_POWER_PREF", "low") };
     }
     desempenho::carrega();
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,wgpu=warn,naga=warn"),
-    )
+    relatorio::carrega();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
+        "info,iced_winit=warn,winit=warn,wgpu=warn,naga=warn,zbus=warn,tracing=warn,fontdb=error",
+    ))
     .format_timestamp_millis()
+    .target(relatorio::alvo_do_log())
     .init();
+    std::panic::set_hook(Box::new(|info| {
+        let bt = std::backtrace::Backtrace::capture();
+        log::error!("PANIC DETECTADO: {info}\n{bt:?}");
+        eprintln!("PANIC DETECTADO: {info}\n{bt:?}");
+    }));
     let _ = rustls::crypto::ring::default_provider().install_default();
     tema::carrega_tema_salvo();
 

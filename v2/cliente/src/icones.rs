@@ -43,7 +43,6 @@ icones! {
     pin => "pin",
     copiar => "copiar",
     coroa => "crown",
-    discord => "discord",
     amigos => "users",
     paleta => "palette",
     mais => "plus",

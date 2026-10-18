@@ -173,6 +173,7 @@ impl App {
                 token,
                 eu: None,
                 tela: Tela::Carregando,
+                chamada_ativa: None,
                 modal_meu_perfil: None,
                 modal_outro_perfil: None,
                 ver_perfil: Default::default(),
@@ -234,6 +235,10 @@ impl App {
                 ligar_ao_abrir: None,
                 abrir_apos_sair: None,
                 avisos_cmd: None,
+                modal_foto: None,
+                modal_visao_jogo: None,
+                jogos_reg_renomeando: None,
+                jogos_reg_seletor_aberto: false,
             },
             Task::batch([
                 tarefa,
@@ -332,8 +337,16 @@ impl App {
     pub(crate) fn atualiza_bandeja(&self) {
         if let Some(handle) = &self.handle_bandeja {
             let (mutado, em_chamada, sala) = match &self.tela {
-                Tela::Sala(s) => (s.mudo, s.na_chamada, Some(s.entrada.sala.clone())),
-                _ => (false, false, None),
+                Tela::Sala(s) if s.na_chamada => (s.mudo, true, Some(s.entrada.sala.clone())),
+                _ => {
+                    if let Some(ca) = &self.chamada_ativa {
+                        (ca.mudo, ca.na_chamada, Some(ca.entrada.sala.clone()))
+                    } else if let Tela::Sala(s) = &self.tela {
+                        (s.mudo, false, Some(s.entrada.sala.clone()))
+                    } else {
+                        (false, false, None)
+                    }
+                }
             };
             let minimizar = self.minimizar_para_bandeja;
             let handle = handle.clone();

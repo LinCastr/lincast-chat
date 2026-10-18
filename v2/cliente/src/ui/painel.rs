@@ -20,7 +20,7 @@ fn atividade_de(m: &Membro, avisos: &EstadoAvisos) -> Option<Atividade> {
 }
 
 /// Há quanto tempo (mm:ss ou h:mm:ss) o jogo está aberto.
-fn tempo_de_jogo(desde_ms: u64) -> String {
+pub(crate) fn tempo_de_jogo(desde_ms: u64) -> String {
     let agora = chrono::Utc::now().timestamp_millis().max(0) as u64;
     ui::coluna::formata_duracao(agora.saturating_sub(desde_ms) / 1000)
 }
@@ -40,7 +40,7 @@ pub(crate) fn bloco_atividade<'a>(a: &Atividade) -> Option<Element<'a, Msg>> {
             linha = linha.push(
                 row![
                     ui::efeitos::ico(icones::controle(), 13.0, c.sucesso_forte),
-                    text(d).size(12).style(fraco),
+                    text(format!("há {d}")).size(12).style(fraco),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -225,8 +225,9 @@ fn linha_de_membro<'a>(
         .width(Length::Fill)
         .padding([6, 8])
         .style(crate::ui::efeitos::item_suave(id_hover.clone(), false))
-        .on_press(Msg::AbrePerfilUsuario(alvo));
+        .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
     iced::widget::mouse_area(btn)
+        .on_press(Msg::AbrePerfilUsuario(alvo))
         .on_enter(Msg::Hover(id_hover.clone(), true))
         .on_exit(Msg::Hover(id_hover, false))
         .on_right_press(Msg::AbreMenuPessoa {
@@ -320,32 +321,50 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
             })
             .into(),
     };
+    let alvo = m.usuario.clone().unwrap_or_else(|| m.name.clone());
+    let avatar_btn = button(ui::avatar::avatar(
+        m.avatar.as_deref(),
+        &m.uid,
+        &m.name,
+        80.0,
+        Some(st),
+        c.lateral,
+    ))
+    .padding(0)
+    .style(|_, _| button::Style::default())
+    .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
+
     // A foto de 80px sobrepõe a base do banner.
     let topo = stack![
         column![banner, space().height(40)],
-        container(ui::avatar::avatar(
-            m.avatar.as_deref(),
-            &m.uid,
-            &m.name,
-            80.0,
-            Some(st),
-            c.lateral,
-        ))
-        .padding(iced::Padding {
+        container(avatar_btn).padding(iced::Padding {
             top: 60.0,
             left: 16.0,
             ..Default::default()
         }),
     ];
     let mut corpo = Column::new().spacing(12).padding([8, 16]);
-    corpo = corpo.push(text(&m.name).size(20).font(negrito()));
+    let nome_btn = button(text(&m.name).size(20).font(negrito()))
+        .padding(0)
+        .style(move |_, st| button::Style {
+            text_color: if matches!(st, button::Status::Hovered) {
+                c.destaque
+            } else {
+                c.texto
+            },
+            ..Default::default()
+        })
+        .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
+    corpo = corpo.push(nome_btn);
     if let Some(u) = &m.usuario {
         corpo = corpo.push(text(format!("@{u}")).size(14).style(fraco));
     }
     if let Some(sc) = m.status_custom.as_ref().filter(|s| !s.vencido()) {
         corpo = corpo.push(
             row![
-                text(sc.emoji.clone()).size(14),
+                text(sc.emoji.clone())
+                    .size(14)
+                    .font(crate::tema::FONTE_EMOJI),
                 text(sc.texto.clone()).size(13).style(fraco),
             ]
             .spacing(6),
@@ -361,7 +380,6 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
             .filter(|b| !b.trim().is_empty())
             .unwrap_or_else(|| "Sem descrição.".into()),
     ));
-    let alvo = m.usuario.clone().unwrap_or_else(|| m.name.clone());
     column![
         scrollable(column![topo, corpo])
             .height(Length::Fill)

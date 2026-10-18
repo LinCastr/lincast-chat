@@ -22,10 +22,24 @@ pub struct PrefsConversas {
     /// Tocar o som de chamada recebida.
     #[serde(default = "verdadeiro")]
     pub som_do_toque: bool,
+    /// Volume do toque de chamada (0–100).
+    #[serde(default = "volume_toque_padrao")]
+    pub volume_toque: u8,
+    /// Volume dos efeitos sonoros e soundboard (0–100).
+    #[serde(default = "volume_efeitos_padrao")]
+    pub volume_efeitos: u8,
 }
 
 fn verdadeiro() -> bool {
     true
+}
+
+fn volume_toque_padrao() -> u8 {
+    80
+}
+
+fn volume_efeitos_padrao() -> u8 {
+    crate::som::VOLUME_PADRAO
 }
 
 fn arquivo() -> Option<PathBuf> {
@@ -41,6 +55,8 @@ impl Default for PrefsConversas {
             notificar_mensagens: true,
             notificar_mencoes: true,
             som_do_toque: true,
+            volume_toque: 80,
+            volume_efeitos: crate::som::VOLUME_PADRAO,
         }
     }
 }

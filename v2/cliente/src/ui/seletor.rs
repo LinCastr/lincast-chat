@@ -412,7 +412,7 @@ fn aviso<'a>(t: &'static str) -> Element<'a, Msg> {
 
 fn celula_emoji<'a>(e: &'static str) -> Element<'a, Msg> {
     let c = tema::cores();
-    button(text(e).size(22).center())
+    button(text(e).size(22).center().font(crate::tema::FONTE_EMOJI))
         .width(40)
         .height(40)
         .padding(0)
