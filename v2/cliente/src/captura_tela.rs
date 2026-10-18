@@ -41,6 +41,7 @@ pub fn inicia(
     cursor: bool,
     x11: bool,
     previa: Option<tokio::sync::mpsc::UnboundedSender<QuadroPrevia>>,
+    ao_terminar: Option<Box<dyn FnOnce() + Send>>,
 ) -> Option<Captura> {
     let (tx_res, rx_res) = mpsc::channel::<Option<VideoResolution>>();
     let (tx_parar, rx_parar) = mpsc::channel::<()>();
@@ -52,7 +53,14 @@ pub fn inicia(
         let quadros = quadros.clone();
         std::thread::Builder::new()
             .name("captura-tela".into())
-            .spawn(move || laco(fps, cursor, x11, tx_res, rx_parar, fonte, quadros, previa))
+            .spawn(move || {
+                laco(fps, cursor, x11, tx_res, rx_parar, fonte, quadros, previa);
+                // A captura pode acabar por fora (botão "parar" do sistema,
+                // portal fechado): quem transmite precisa saber.
+                if let Some(f) = ao_terminar {
+                    f();
+                }
+            })
             .expect("não consegui criar a thread de captura");
     }
 

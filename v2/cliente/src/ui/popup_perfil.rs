@@ -91,7 +91,7 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
     let banner: Element<'a, Msg> = button(crate::ui::efeitos::com_lapis("pp-banner", banner, 0.0))
         .padding(0)
         .width(Length::Fill)
-        .style(|_, _| button::Style::default())
+        .style(tema::botao_transparente)
         .on_press(faz(Msg::AbreEditarPerfil))
         .into();
     // Bolha de status personalizado ao lado da foto: "+" quando não há.
@@ -141,7 +141,7 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
                 36.0,
             ))
             .padding(0)
-            .style(|_, _| button::Style::default())
+            .style(tema::botao_transparente)
             .on_press(faz(Msg::AbreEditarPerfil))
         )
         .padding(Padding {

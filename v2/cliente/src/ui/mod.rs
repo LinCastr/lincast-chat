@@ -31,6 +31,7 @@ pub mod previa;
 pub mod quadro;
 pub mod reacao;
 pub mod roleta;
+pub mod selecionavel;
 pub mod seletor;
 pub mod soundboard;
 pub mod status;

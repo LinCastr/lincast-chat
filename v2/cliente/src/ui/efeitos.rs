@@ -60,7 +60,8 @@ pub fn botao_icone_anim<'a>(
     } else if ligado {
         c.destaque
     } else {
-        c.texto_fraco
+        // Clareia com o mouse em cima (o fundo e o contorno vêm do estilo).
+        tema::mistura(c.texto_fraco, c.texto, anim::t(id))
     };
     let miolo: Element<'a, Msg> = if efeito == Efeito::EmojiAleatorio && anim::dentro(id) {
         // Colorido enquanto o mouse está em cima; volta ao ícone ao sair.

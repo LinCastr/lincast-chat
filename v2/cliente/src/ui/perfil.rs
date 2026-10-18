@@ -163,7 +163,7 @@ pub fn modal_perfil_usuario<'a>(
         if let Some(url) = cartao.banner_url.as_ref().filter(|u| !u.trim().is_empty()) {
             button(fundo_banner)
                 .padding(0)
-                .style(|_, _| button::Style::default())
+                .style(tema::botao_transparente)
                 .on_press(Msg::AbreFoto {
                     url: url.clone(),
                     titulo: format!("Banner de {}", cartao.name),
@@ -195,7 +195,7 @@ pub fn modal_perfil_usuario<'a>(
         if let Some(url) = cartao.avatar.as_ref().filter(|u| !u.trim().is_empty()) {
             button(avatar_base)
                 .padding(0)
-                .style(|_, _| button::Style::default())
+                .style(tema::botao_transparente)
                 .on_press(Msg::AbreFoto {
                     url: url.clone(),
                     titulo: format!("Avatar de {}", cartao.name),
@@ -599,7 +599,7 @@ pub fn modal_editar_meu_perfil<'a>(
                 )
                 .padding([6, 10])
                 .style(tema::botao_secundario)
-                .on_press(Msg::EscolheArquivoAvatar),
+                .on_press(Msg::AbreMenuMidia(true)),
                 if tem_avatar {
                     button(text("Remover avatar").size(12))
                         .padding([6, 10])
@@ -608,7 +608,7 @@ pub fn modal_editar_meu_perfil<'a>(
                 } else {
                     button(text("").size(0))
                         .padding(0)
-                        .style(|_, _| button::Style::default())
+                        .style(tema::botao_transparente)
                 }
             ]
             .spacing(8)
@@ -625,7 +625,7 @@ pub fn modal_editar_meu_perfil<'a>(
                 )
                 .padding([6, 10])
                 .style(tema::botao_secundario)
-                .on_press(Msg::EscolheArquivoBanner),
+                .on_press(Msg::AbreMenuMidia(false)),
                 if tem_banner {
                     button(text("Remover banner").size(12))
                         .padding([6, 10])
@@ -634,7 +634,7 @@ pub fn modal_editar_meu_perfil<'a>(
                 } else {
                     button(text("").size(0))
                         .padding(0)
-                        .style(|_, _| button::Style::default())
+                        .style(tema::botao_transparente)
                 }
             ]
             .spacing(8)
@@ -837,16 +837,31 @@ pub fn modal_editar_meu_perfil<'a>(
 }
 
 /// Visualizador de fotos (avatar/banner) em tela cheia com zoom interativo.
-pub fn modal_visualizador_foto<'a>(foto: &'a crate::estado::ModalFoto) -> Element<'a, Msg> {
+/// `da_mensagem`: imagem de uma mensagem do chat já carregada, com a chave do
+/// GIF (o GIF anima com o mouse em cima, como no chat).
+pub fn modal_visualizador_foto<'a>(
+    foto: &'a crate::estado::ModalFoto,
+    da_mensagem: Option<(iced::widget::image::Handle, String)>,
+) -> Element<'a, Msg> {
     let c = tema::cores();
-    let img_elem: Element<'a, Msg> = match crate::avatar::handle_exibicao(&foto.url) {
+    let (handle, chave_gif) = match da_mensagem {
+        Some((h, chave)) => (Some(h), Some(chave)),
+        None => (crate::avatar::handle_exibicao(&foto.url), None),
+    };
+    let img_elem: Element<'a, Msg> = match handle {
         Some(h) => {
             let dim = (460.0 * foto.zoom).max(100.0);
-            image(h)
+            let img = image(h)
                 .width(dim)
                 .height(dim)
-                .content_fit(ContentFit::Contain)
-                .into()
+                .content_fit(ContentFit::Contain);
+            match chave_gif {
+                Some(chave) => iced::widget::mouse_area(img)
+                    .on_enter(Msg::HoverGif(Some(chave)))
+                    .on_exit(Msg::HoverGif(None))
+                    .into(),
+                None => img.into(),
+            }
         }
         None => container(
             column![
@@ -957,7 +972,7 @@ pub fn editor_perfil<'a>(
     let banner = button(crate::ui::efeitos::com_lapis("ep-banner", banner_el, 0.0))
         .padding(0)
         .width(Length::Fill)
-        .style(|_, _| button::Style::default())
+        .style(tema::botao_transparente)
         .on_press(Msg::AbreMenuMidia(false));
     let foto = button(
         container(crate::ui::efeitos::com_lapis(
@@ -983,7 +998,7 @@ pub fn editor_perfil<'a>(
         }),
     )
     .padding(0)
-    .style(|_, _| button::Style::default())
+    .style(tema::botao_transparente)
     .on_press(Msg::AbreMenuMidia(true));
     let bolha = button(match ctx.status_custom.filter(|s| !s.vencido()) {
         Some(sc) => row![
@@ -1140,7 +1155,7 @@ pub fn editor_perfil<'a>(
                 }),
             )
             .padding(2)
-            .style(|_, _| button::Style::default())
+            .style(tema::botao_transparente)
             .on_press(Msg::EscolheCorPerfil(hex.to_string())),
         );
     }
@@ -1206,7 +1221,7 @@ pub fn editor_perfil<'a>(
                 button(text("Trocar avatar").size(12))
                     .padding([5, 10])
                     .style(tema::botao_secundario)
-                    .on_press(Msg::EscolheArquivoAvatar),
+                    .on_press(Msg::AbreMenuMidia(true)),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
@@ -1225,7 +1240,7 @@ pub fn editor_perfil<'a>(
                 button(text("Trocar banner").size(12))
                     .padding([5, 10])
                     .style(tema::botao_secundario)
-                    .on_press(Msg::EscolheArquivoBanner),
+                    .on_press(Msg::AbreMenuMidia(false)),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
@@ -1263,6 +1278,100 @@ pub fn editor_perfil<'a>(
         controles = controles.push(text(e.clone()).size(12).style(crate::texto_perigo));
     }
     row![controles, cartao].spacing(32).into()
+}
+
+/// Buscador de GIF para a foto ou o banner do perfil (o "Escolher GIF").
+pub fn modal_gif_perfil<'a>(est: &'a crate::estado::BuscaGifPerfil) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let mut grade = column![].spacing(6);
+    let mut linha = row![].spacing(6);
+    let mut n = 0;
+    for g in &est.resultados {
+        let miolo: Element<'a, Msg> = match crate::avatar::handle(&g.previa) {
+            Some(h) => image(h)
+                .width(Length::Fill)
+                .height(96)
+                .content_fit(ContentFit::Cover)
+                .into(),
+            None => container(text("…").size(12).style(fraco))
+                .width(Length::Fill)
+                .height(96)
+                .center_x(Length::Fill)
+                .center_y(96)
+                .into(),
+        };
+        linha = linha.push(
+            button(miolo)
+                .width(Length::FillPortion(1))
+                .padding(0)
+                .style(tema::botao_secundario)
+                .on_press_maybe((!est.enviando).then(|| Msg::GifPerfilEscolhe(g.url.clone()))),
+        );
+        n += 1;
+        if n % 3 == 0 {
+            grade = grade.push(linha);
+            linha = row![].spacing(6);
+        }
+    }
+    if n % 3 != 0 {
+        for _ in 0..(3 - n % 3) {
+            linha = linha.push(space().width(Length::FillPortion(1)));
+        }
+        grade = grade.push(linha);
+    }
+    let estado: Element<'a, Msg> = if est.enviando {
+        text("Enviando o GIF…").size(13).style(fraco).into()
+    } else if est.buscando {
+        text("Buscando GIFs…").size(13).style(fraco).into()
+    } else if let Some(e) = &est.erro {
+        text(e.clone()).size(13).style(texto_perigo).into()
+    } else {
+        space().height(0).into()
+    };
+    let titulo = if est.avatar {
+        "GIF da foto de perfil"
+    } else {
+        "GIF do banner"
+    };
+    let cartao = container(
+        column![
+            row![
+                text(titulo).size(17).font(negrito()),
+                space().width(Length::Fill),
+                button(crate::ui::efeitos::ico(
+                    icones::fechar(),
+                    16.0,
+                    c.texto_fraco
+                ))
+                .padding(6)
+                .style(tema::botao_icone(false, false))
+                .on_press(Msg::GifPerfilFecha),
+            ]
+            .align_y(Alignment::Center),
+            text_input("Buscar GIF", &est.busca)
+                .on_input(Msg::GifPerfilBusca)
+                .on_submit(Msg::GifPerfilSubmete)
+                .padding([8, 10])
+                .size(14)
+                .style(tema::campo),
+            estado,
+            container(scrollable(grade).style(tema::rolagem)).height(340),
+        ]
+        .spacing(12),
+    )
+    .width(460)
+    .padding(20)
+    .style(move |_| container::Style {
+        background: Some(iced::Background::Color(c.lateral)),
+        text_color: Some(c.texto),
+        border: iced::Border {
+            color: c.borda,
+            width: 1.0,
+            radius: tema::RAIO_GRANDE.into(),
+        },
+        ..Default::default()
+    });
+    crate::ui::efeitos::janela_fechavel("gif-perfil", cartao.into(), 0.6, Msg::GifPerfilFecha)
 }
 
 #[cfg(test)]

@@ -72,6 +72,8 @@ impl SalaAberta {
         }
         match msg {
             Msg::Rascunho(v) => {
+                // Mexeu no campo de mensagem: o Ctrl+C volta a ser dele.
+                self.limpa_selecoes(None);
                 let wordle_ativo = self.wordle.as_ref().is_some_and(|w| {
                     w.modo != ui::wordle::ModoWordle::Minimizado
                         && w.estado.as_ref().and_then(|e| e.fim.as_ref()).is_none()
@@ -521,6 +523,34 @@ impl SalaAberta {
             }
             Msg::CancelaTela => self.config_tela = None,
             Msg::ParaTela => self.manda(Comando::PararTela),
+            Msg::SelecaoTexto(chave, acao) => {
+                use iced::widget::text_editor::{Action, Edit};
+                match acao {
+                    // Digitar com o texto da mensagem em foco vai para o campo
+                    // de mensagem, como no Discord.
+                    Action::Edit(Edit::Insert(ch)) => {
+                        self.rascunho.push(ch);
+                        return iced::widget::operation::focus("chat-rascunho-input");
+                    }
+                    Action::Edit(_) | Action::Scroll { .. } => {}
+                    outra => {
+                        let clique = matches!(outra, Action::Click(_));
+                        if matches!(
+                            outra,
+                            Action::Click(_) | Action::SelectWord | Action::SelectLine
+                        ) {
+                            // Uma seleção por vez, como em qualquer texto.
+                            self.limpa_selecoes(Some(&chave));
+                        }
+                        if let Some(sel) = self.selecionaveis.get_mut(&chave) {
+                            sel.conteudo.perform(outra);
+                            if clique && let Some(url) = sel.link_no_cursor() {
+                                return Task::done(Msg::AbreLink(url));
+                            }
+                        }
+                    }
+                }
+            }
             Msg::AlternaPreviaPropria => {
                 self.previa_propria_oculta = !self.previa_propria_oculta;
                 if self.previa_propria_oculta
@@ -856,6 +886,7 @@ impl SalaAberta {
                     saida_selecionada: cfg.saida_guid,
                     testando_mic: false,
                     nivel_mic: 0.0,
+                    supressao_ruido: cfg.supressao_ruido,
                 });
                 self.manda(Comando::AtualizaDispositivosAudio);
             }
@@ -1176,5 +1207,45 @@ impl SalaAberta {
             _ => {}
         }
         Task::none()
+    }
+}
+
+impl SalaAberta {
+    /// Tira a seleção de todos os textos de mensagem, menos `menos`.
+    pub(crate) fn limpa_selecoes(&mut self, menos: Option<&str>) {
+        for (k, sel) in &mut self.selecionaveis {
+            if Some(k.as_str()) != menos && sel.conteudo.selection().is_some() {
+                sel.conteudo
+                    .perform(iced::widget::text_editor::Action::Move(
+                        iced::widget::text_editor::Motion::DocumentStart,
+                    ));
+            }
+        }
+    }
+
+    /// Garante um texto selecionável para cada trecho de texto das mensagens
+    /// (e joga fora os de mensagens que sumiram ou mudaram).
+    pub(crate) fn sincroniza_selecionaveis(&mut self) {
+        let mut vistos = std::collections::HashSet::new();
+        for m in &self.mensagens {
+            if m.sistema.is_some() || m.texto.is_empty() {
+                continue;
+            }
+            for (idx, trecho) in ui::chat::separa_blocos_codigo(&m.texto)
+                .into_iter()
+                .enumerate()
+            {
+                let ui::chat::TrechoMensagem::Texto(t) = trecho else {
+                    continue;
+                };
+                let chave = format!("{}#{idx}", m.id);
+                if self.selecionaveis.get(&chave).is_none_or(|s| s.texto != t) {
+                    self.selecionaveis
+                        .insert(chave.clone(), ui::selecionavel::TextoSelecionavel::novo(t));
+                }
+                vistos.insert(chave);
+            }
+        }
+        self.selecionaveis.retain(|k, _| vistos.contains(k));
     }
 }

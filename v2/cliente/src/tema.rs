@@ -668,6 +668,24 @@ fn borda(cor: Color, raio: f32) -> Border {
     }
 }
 
+/// Contorno do botão com o mouse em cima: o retorno visual que faltava.
+fn contorno_hover(c: &Cores, raio: f32) -> Border {
+    Border {
+        color: mistura(c.borda, c.texto, 0.45),
+        width: 1.0,
+        radius: Radius::from(raio),
+    }
+}
+
+/// Brilho em volta dos botões coloridos com o mouse em cima.
+fn brilho(cor: Color) -> Shadow {
+    Shadow {
+        color: Color { a: 0.45, ..cor },
+        offset: iced::Vector::new(0.0, 0.0),
+        blur_radius: 10.0,
+    }
+}
+
 fn sem_borda(raio: f32) -> Border {
     Border {
         color: Color::TRANSPARENT,
@@ -863,7 +881,11 @@ pub fn botao_primario(_: &Theme, status: button::Status) -> button::Style {
             c.sobre_destaque
         },
         border: sem_borda(RAIO),
-        shadow: Shadow::default(),
+        shadow: if status == button::Status::Hovered {
+            brilho(c.destaque)
+        } else {
+            Shadow::default()
+        },
         snap: true,
     }
 }
@@ -883,7 +905,11 @@ pub fn botao_secundario(_: &Theme, status: button::Status) -> button::Style {
         } else {
             c.texto
         },
-        border: borda(c.borda, RAIO),
+        border: if status == button::Status::Hovered {
+            contorno_hover(&c, RAIO)
+        } else {
+            borda(c.borda, RAIO)
+        },
         shadow: Shadow::default(),
         snap: true,
     }
@@ -906,6 +932,28 @@ pub fn item_de_lista(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// Botão sem fundo nem borda (área clicável). O `button::Style::default()`
+/// do iced deixa o texto preto, ilegível nos temas escuros.
+pub fn botao_transparente(_: &Theme, _: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: cores().texto,
+        border: sem_borda(RAIO),
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+/// Como `item_de_lista`, com o contorno de hover (cartão clicável).
+pub fn item_de_lista_hover(t: &Theme, status: button::Status) -> button::Style {
+    let c = cores();
+    let mut st = item_de_lista(t, status);
+    if status == button::Status::Hovered {
+        st.border = contorno_hover(&c, RAIO);
+    }
+    st
+}
+
 /// Botão de ícone da barra de controles. `ligado` = estado que merece atenção
 /// (mudo, ensurdecido, apresentando): é aí que a cor aparece, e só aí.
 pub fn botao_icone(
@@ -923,8 +971,8 @@ pub fn botao_icone(
         };
         let fundo = match status {
             button::Status::Hovered => Some(
-                base.map(|b| mistura(b, Color::WHITE, 0.10))
-                    .unwrap_or_else(|| mistura(c.elevado, c.texto, 0.10)),
+                base.map(|b| mistura(b, Color::WHITE, 0.12))
+                    .unwrap_or_else(|| mistura(c.elevado, c.texto, 0.14)),
             ),
             // Afunda ao clicar: mais escuro que o repouso.
             button::Status::Pressed => Some(mistura(base.unwrap_or(c.elevado), Color::BLACK, 0.18)),
@@ -936,10 +984,16 @@ pub fn botao_icone(
                 c.perigo
             } else if ligado {
                 c.destaque
+            } else if status == button::Status::Hovered {
+                c.texto
             } else {
                 c.texto_fraco
             },
-            border: sem_borda(RAIO),
+            border: if status == button::Status::Hovered {
+                contorno_hover(&c, RAIO)
+            } else {
+                sem_borda(RAIO)
+            },
             shadow: Shadow::default(),
             snap: true,
         }
@@ -1088,7 +1142,11 @@ pub fn botao_perigo(_: &Theme, status: button::Status) -> button::Style {
             Color::WHITE
         },
         border: sem_borda(RAIO),
-        shadow: Shadow::default(),
+        shadow: if status == button::Status::Hovered {
+            brilho(c.perigo)
+        } else {
+            Shadow::default()
+        },
         snap: true,
     }
 }

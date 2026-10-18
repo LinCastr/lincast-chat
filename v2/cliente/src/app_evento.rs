@@ -159,6 +159,9 @@ impl App {
                     m.votos = votos;
                 }
             }
+            // Quadro de tela que chega depois do fim (estava na fila) recriaria a
+            // caixa com a imagem parada.
+            Evento::Quadro(q) if q.de_tela && !apresentando(&s.pessoas, &q.dono) => {}
             Evento::Quadro(q) => {
                 let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
                 match s
@@ -465,6 +468,7 @@ impl App {
                 }
                 self.painel_audio.nivel_mic = nivel;
             }
+            Evento::Quadro(q) if q.de_tela && !apresentando(&c.pessoas, &q.dono) => {}
             Evento::Quadro(q) => {
                 let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
                 match c
@@ -545,7 +549,18 @@ impl App {
         if let Tela::Sala(s) = &self.tela
             && s.entrada.sala == id
         {
-            return self.evento_da_sala(ev);
+            let mexe_no_texto = matches!(
+                ev,
+                Evento::Historico(_)
+                    | Evento::Chat(_)
+                    | Evento::MensagemEditada { .. }
+                    | Evento::MensagemApagada(_)
+            );
+            let t = self.evento_da_sala(ev);
+            if mexe_no_texto && let Tela::Sala(s) = &mut self.tela {
+                s.sincroniza_selecionaveis();
+            }
+            return t;
         }
         if self
             .chamada_ativa
@@ -556,4 +571,9 @@ impl App {
         }
         Task::none()
     }
+}
+
+/// A pessoa `id` está transmitindo a tela agora?
+fn apresentando(pessoas: &[crate::sala::Pessoa], id: &str) -> bool {
+    pessoas.iter().any(|p| p.id == id && p.apresentando)
 }

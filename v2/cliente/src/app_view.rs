@@ -366,20 +366,25 @@ impl App {
                 } else {
                     self.eu.as_ref().is_some_and(|e| e.banner_url.is_some())
                 };
-                let mut v: Vec<Element<'a, Msg>> = vec![item(
-                    icones::imagem_sobe(),
-                    if *avatar {
-                        "Trocar avatar (imagem ou GIF)"
-                    } else {
-                        "Trocar banner (imagem ou GIF)"
-                    },
-                    faz(if *avatar {
-                        Msg::EscolheArquivoAvatar
-                    } else {
-                        Msg::EscolheArquivoBanner
-                    }),
-                    false,
-                )];
+                // Imagem abre o explorador de arquivos; GIF, o buscador do app.
+                let mut v: Vec<Element<'a, Msg>> = vec![
+                    item(
+                        icones::imagem_sobe(),
+                        "Enviar imagem",
+                        faz(if *avatar {
+                            Msg::EscolheArquivoAvatar
+                        } else {
+                            Msg::EscolheArquivoBanner
+                        }),
+                        false,
+                    ),
+                    item(
+                        icones::imagem(),
+                        "Escolher GIF",
+                        faz(Msg::AbreGifPerfil(*avatar)),
+                        false,
+                    ),
+                ];
                 if tem {
                     v.push(item(
                         icones::lixeira(),
@@ -486,6 +491,30 @@ impl App {
                 }
                 let pad = posiciona(m.x, m.y, self.janela, 40.0 + v.len() as f32 * 36.0);
                 sobre(base, coluna(v), pad)
+            }
+            AlvoMenu::WordleJogador { dia, uid } => {
+                let jogador = match &self.tela {
+                    Tela::Sala(s) => s.wordle_grupo.get(dia).and_then(|g| {
+                        g.hoje
+                            .iter()
+                            .chain(&g.ontem)
+                            .find(|j| j.uid == *uid)
+                            .map(|j| (j, g.numero))
+                    }),
+                    _ => None,
+                };
+                let Some((j, numero)) = jogador else {
+                    return base;
+                };
+                ui::menu::sobre_cartao(
+                    base,
+                    ui::wordle::cartao_tentativas(j, numero),
+                    m.x,
+                    m.y,
+                    self.janela,
+                    ui::wordle::LARGURA_TENTATIVAS,
+                    ui::wordle::ALTURA_TENTATIVAS,
+                )
             }
             AlvoMenu::Previa { uid, nome, app } => {
                 if *app {
@@ -1145,9 +1174,27 @@ impl App {
                 iced::widget::stack![tela_final, ui::configuracoes::modal_visao_jogo(j)].into();
         }
 
+        if let Some(g) = &self.gif_perfil {
+            tela_final = iced::widget::stack![tela_final, ui::perfil::modal_gif_perfil(g)].into();
+        }
+
         if let Some(f) = &self.modal_foto {
-            tela_final =
-                iced::widget::stack![tela_final, ui::perfil::modal_visualizador_foto(f)].into();
+            // Imagem do chat: o quadro atual do GIF ou a própria imagem.
+            let da_mensagem = match (&f.mensagem, &self.tela) {
+                (Some(id), Tela::Sala(s)) => {
+                    let chave = crate::gifanim::chave_mensagem(id);
+                    crate::gifanim::quadro_atual(&chave)
+                        .or_else(|| crate::gifanim::quadro_parado(&chave))
+                        .or_else(|| s.imagens.get(id).cloned())
+                        .map(|h| (h, chave))
+                }
+                _ => None,
+            };
+            tela_final = iced::widget::stack![
+                tela_final,
+                ui::perfil::modal_visualizador_foto(f, da_mensagem)
+            ]
+            .into();
         }
 
         tela_final

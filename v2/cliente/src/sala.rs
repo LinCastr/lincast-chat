@@ -377,6 +377,8 @@ pub enum Comando {
     PttTransmitindo(bool),
     AtualizaDispositivosAudio,
     SelecionaDispositivoGravacao(String),
+    /// Liga/desliga a supressão de ruído (RNNoise) do microfone.
+    DefineSupressaoRuido(bool),
     SelecionaDispositivoReproducao(String),
     IniciaTesteMic,
     ParaTesteMic,
@@ -559,6 +561,10 @@ enum Interno {
     NivelRemoto(String, f32),
     CicloEco,
     CicloQualidade,
+    /// Hora de medir o próprio microfone.
+    CicloMic,
+    /// A captura de tela de número `n` terminou (por nós ou por fora).
+    TelaAcabou(u64),
 }
 
 struct Par {
@@ -585,6 +591,8 @@ impl Drop for Par {
 }
 
 struct Tela {
+    /// Número desta captura: o aviso de fim de uma antiga não derruba a nova.
+    geracao: u64,
     captura: captura_tela::Captura,
     video: RtcVideoTrack,
     audio: Option<RtcAudioTrack>,
@@ -618,10 +626,13 @@ struct Ator {
     mudo: bool,
     surdo: bool,
     mic: Option<RtcAudioTrack>,
+    /// `concord-audio microfone` quando a supressão de ruído está ligada.
+    mic_filho: Option<tokio::process::Child>,
     id_voz: String,
     id_tela: String,
     id_camera: String,
     tela: Option<Tela>,
+    geracao_tela: u64,
     camera: Option<Camera>,
     previa: Option<Previa>,
     ptt_ativo: bool,
@@ -788,10 +799,12 @@ async fn roda_interno(
         mudo: false,
         surdo: false,
         mic: None,
+        mic_filho: None,
         id_voz: format!("lincast-voz-{}", aleatorio()),
         id_tela: format!("lincast-tela-{}", aleatorio()),
         id_camera: format!("lincast-cam-{}", aleatorio()),
         tela: None,
+        geracao_tela: 0,
         camera: None,
         previa: None,
         ptt_ativo: false,
@@ -1308,6 +1321,17 @@ impl Ator {
                 self.processa_qualidade_e_bitrate().await;
                 Ok(())
             }
+            Interno::CicloMic => {
+                self.mede_mic_local();
+                Ok(())
+            }
+            Interno::TelaAcabou(n) => {
+                if self.tela.as_ref().is_some_and(|t| t.geracao == n) {
+                    log::info!("[tela] a captura terminou por fora; parando a transmissão");
+                    self.para_tela().await;
+                }
+                Ok(())
+            }
             Interno::Caiu(_) => Ok(()),
         }
     }
@@ -1643,34 +1667,13 @@ impl Ator {
                     cfg.entrada_nome = Some(d.nome.clone());
                 }
                 crate::dispositivos::salva_config(&cfg);
-                if self.na_chamada
-                    && let Some(antigo) = self.mic.as_ref().map(|m| m.id())
-                {
-                    let novo_mic = self.fabrica.create_device_audio_track("lincast-mic");
-                    let mut ligado = !(self.mudo || self.surdo);
-                    if self.ptt_ativo && ligado {
-                        ligado = self.ptt_segurando;
-                    }
-                    novo_mic.set_enabled(ligado);
-                    self.mic = Some(novo_mic.clone());
-                    for p in self.pares.values() {
-                        for sender in p.pc.senders() {
-                            // Só o remetente do microfone: o som da transmissão
-                            // também é áudio e não pode virar microfone.
-                            if let Some(libwebrtc::media_stream_track::MediaStreamTrack::Audio(t)) =
-                                sender.track()
-                                && t.id() == antigo
-                            {
-                                let _ = sender.set_track(Some(
-                                    libwebrtc::media_stream_track::MediaStreamTrack::Audio(
-                                        novo_mic.clone(),
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                    self.inicia_monitor_mic_local();
-                }
+                self.troca_mic().await;
+            }
+            Comando::DefineSupressaoRuido(ligada) => {
+                let mut cfg = crate::dispositivos::carrega_config();
+                cfg.supressao_ruido = ligada;
+                crate::dispositivos::salva_config(&cfg);
+                self.troca_mic().await;
             }
             Comando::SelecionaDispositivoReproducao(guid) => {
                 let _ = crate::dispositivos::aplica_dispositivo_reproducao(&self.fabrica, &guid);
@@ -1749,6 +1752,68 @@ impl Ator {
         }
     }
 
+    /// Troca o microfone da chamada (outro dispositivo ou supressão de
+    /// ruído ligada/desligada) sem renegociar: só o remetente do microfone.
+    async fn troca_mic(&mut self) {
+        if self.na_chamada
+            && let Some(antigo) = self.mic.as_ref().map(|m| m.id())
+        {
+            let novo_mic = self.cria_mic().await;
+            let mut ligado = !(self.mudo || self.surdo);
+            if self.ptt_ativo && ligado {
+                ligado = self.ptt_segurando;
+            }
+            novo_mic.set_enabled(ligado);
+            self.mic = Some(novo_mic.clone());
+            for p in self.pares.values() {
+                for sender in p.pc.senders() {
+                    // Só o remetente do microfone: o som da transmissão
+                    // também é áudio e não pode virar microfone.
+                    if let Some(libwebrtc::media_stream_track::MediaStreamTrack::Audio(t)) =
+                        sender.track()
+                        && t.id() == antigo
+                    {
+                        let _ = sender.set_track(Some(
+                            libwebrtc::media_stream_track::MediaStreamTrack::Audio(
+                                novo_mic.clone(),
+                            ),
+                        ));
+                    }
+                }
+            }
+            self.inicia_monitor_mic_local();
+        }
+    }
+
+    /// Microfone novo: pelo RNNoise se a supressão estiver ligada (e o
+    /// `concord-audio` funcionar), senão pelo módulo de áudio do libwebrtc.
+    async fn cria_mic(&mut self) -> RtcAudioTrack {
+        self.mic_filho = None;
+        let cfg = crate::dispositivos::carrega_config();
+        if cfg.supressao_ruido {
+            match inicia_microfone_rnnoise(cfg.entrada_nome.as_deref(), self.tx.clone()) {
+                Ok((fonte, filho)) => {
+                    // A gravação do ADM fica desligada: o microfone agora é
+                    // uma fonte própria (e as duas no mesmo fluxo derrubam o
+                    // app, ver `adiciona_audio_de_tela`).
+                    self.fabrica.set_adm_recording_enabled(false);
+                    self.mic_filho = Some(filho);
+                    return self
+                        .fabrica
+                        .create_audio_track("lincast-mic-rnnoise", fonte);
+                }
+                Err(e) => {
+                    self.emite(Evento::Aviso(format!(
+                        "Supressão de ruído indisponível ({e:#}); usando o microfone normal."
+                    )))
+                    .await;
+                }
+            }
+        }
+        self.fabrica.set_adm_recording_enabled(true);
+        self.fabrica.create_device_audio_track("lincast-mic")
+    }
+
     async fn entra_na_chamada(&mut self) -> Result<()> {
         if self.na_chamada || self.meu_id.is_empty() {
             return Ok(());
@@ -1765,9 +1830,8 @@ impl Ator {
             .await;
             return Ok(());
         }
-        self.fabrica.set_adm_recording_enabled(true);
         self.fabrica.set_adm_playout_enabled(!self.surdo);
-        let mic = self.fabrica.create_device_audio_track("concord-mic");
+        let mic = self.cria_mic().await;
         self.mic = Some(mic);
         self.aplica_mic();
         self.na_chamada = true;
@@ -1791,40 +1855,58 @@ impl Ator {
         Ok(())
     }
 
+    /// O nível do próprio microfone vem do `getStats` (`media-source`):
+    /// nesta versão do libwebrtc a trilha local do microfone não entrega
+    /// áudio a quem a escuta no app (0 quadros, ver `monitor_mic_real`).
+    /// O nível é medido mesmo com o microfone mutado (aviso de fala no mudo).
     fn inicia_monitor_mic_local(&mut self) {
         if let Some(h) = self.monitor_mic_local.take() {
             h.abort();
         }
-        let track = self
-            .fabrica
-            .create_device_audio_track("lincast-monitor-mic");
-        let stream = libwebrtc::audio_stream::native::NativeAudioStream::new(track, 48000, 1);
         let tx = self.tx.clone();
         let handle = tokio::spawn(async move {
-            use futures_util::StreamExt;
-            let mut stream = stream;
-            let mut ultimo = tokio::time::Instant::now();
-            let mut acumulado: f32 = 0.0;
-            while let Some(frame) = stream.next().await {
-                let mut max_abs: f32 = 0.0;
-                for &s in frame.data.iter() {
-                    let v = (s as f32).abs() / 32768.0;
-                    if v > max_abs {
-                        max_abs = v;
-                    }
-                }
-                if max_abs > acumulado {
-                    acumulado = max_abs;
-                }
-                if ultimo.elapsed() >= std::time::Duration::from_millis(100) {
-                    let nivel = (acumulado.sqrt() * 100.0).clamp(0.0, 100.0);
-                    acumulado = 0.0;
-                    ultimo = tokio::time::Instant::now();
-                    let _ = tx.send(Interno::NivelMicLocal(nivel));
+            let mut t = tokio::time::interval(std::time::Duration::from_millis(150));
+            loop {
+                t.tick().await;
+                if tx.send(Interno::CicloMic).is_err() {
+                    break;
                 }
             }
         });
         self.monitor_mic_local = Some(handle);
+    }
+
+    /// Pede o nível do microfone a uma das conexões, fora do ator.
+    fn mede_mic_local(&self) {
+        if self.mic_filho.is_some() {
+            return; // O nível vem do próprio leitor do RNNoise.
+        }
+        let Some(id) = self.mic.as_ref().map(|m| m.id()) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let Some(pc) = self.pares.values().next().map(|p| p.pc.clone()) else {
+            // Sozinho na chamada não há estatística: apaga o anel.
+            let _ = tx.send(Interno::NivelMicLocal(0.0));
+            return;
+        };
+        tokio::spawn(async move {
+            let Ok(stats) = pc.get_stats().await else {
+                return;
+            };
+            let nivel = stats.into_iter().find_map(|r| match r {
+                libwebrtc::stats::RtcStats::MediaSource(m)
+                    if m.source.kind == "audio" && m.source.track_identifier == id =>
+                {
+                    Some(m.audio.audio_level as f32)
+                }
+                _ => None,
+            });
+            if let Some(n) = nivel {
+                // Mesma escala do nível dos outros (raiz do pico × 100).
+                let _ = tx.send(Interno::NivelMicLocal((n.sqrt() * 100.0).clamp(0.0, 100.0)));
+            }
+        });
     }
 
     async fn sai_da_chamada(&mut self) {
@@ -1861,6 +1943,7 @@ impl Ator {
             }
         }
         self.mic = None;
+        self.mic_filho = None;
         self.fabrica.release_platform_adm();
         self.na_chamada = false;
         self.envia(json!({ "type": "mode-state", "espectador": true }));
@@ -2057,8 +2140,14 @@ impl Ator {
         let x11 =
             std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some();
         let (tx_previa, mut rx_previa) = tokio::sync::mpsc::unbounded_channel();
+        self.geracao_tela += 1;
+        let geracao = self.geracao_tela;
+        let tx = self.tx.clone();
+        let ao_terminar: Box<dyn FnOnce() + Send> = Box::new(move || {
+            let _ = tx.send(Interno::TelaAcabou(geracao));
+        });
         let captura = tokio::task::spawn_blocking(move || {
-            captura_tela::inicia(fps, true, x11, Some(tx_previa))
+            captura_tela::inicia(fps, true, x11, Some(tx_previa), Some(ao_terminar))
         })
         .await?
         .ok_or_else(|| anyhow!("a captura de tela não começou (cancelada?)"))?;
@@ -2124,6 +2213,7 @@ impl Ator {
             }
         });
         self.tela = Some(Tela {
+            geracao,
             captura,
             video,
             audio,
@@ -3249,6 +3339,62 @@ impl Ator {
 const TAXA: u32 = 48_000;
 const CANAIS: u32 = 2;
 
+/// Sobe o `concord-audio microfone` (RNNoise) e devolve a fonte mono que
+/// alimenta a trilha do microfone. O nível medido vai para `tx` a cada 100 ms
+/// (o anel verde e o aviso de fala no mudo).
+fn inicia_microfone_rnnoise(
+    alvo: Option<&str>,
+    tx: mpsc::UnboundedSender<Interno>,
+) -> Result<(NativeAudioSource, tokio::process::Child)> {
+    let Some(bin) = crate::portal_tela::acha_concord_audio() else {
+        bail!("concord-audio não encontrado");
+    };
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("microfone");
+    if let Some(a) = alvo.filter(|a| !a.is_empty() && !a.starts_with("default")) {
+        cmd.args(["--alvo", a]);
+    }
+    let mut filho = cmd.stdout(Stdio::piped()).kill_on_drop(true).spawn()?;
+    let mut stdout = filho.stdout.take().context("stdout do concord-audio")?;
+    let fonte = NativeAudioSource::new(
+        AudioSourceOptions {
+            echo_cancellation: true,
+            noise_suppression: false,
+            auto_gain_control: true,
+        },
+        TAXA,
+        1,
+        0,
+    );
+    let destino = fonte.clone();
+    tokio::spawn(async move {
+        let mut bytes = vec![0u8; (TAXA / 100 * 2) as usize];
+        let mut quadro = AudioFrame::new(TAXA, 1, TAXA / 100);
+        let (mut pico, mut n) = (0f32, 0u32);
+        while stdout.read_exact(&mut bytes).await.is_ok() {
+            for (s, b) in quadro
+                .data
+                .to_mut()
+                .iter_mut()
+                .zip(bytes.as_chunks::<2>().0)
+            {
+                *s = i16::from_le_bytes(*b);
+                pico = pico.max((*s as f32).abs() / 32768.0);
+            }
+            let _ = destino.capture_frame(&quadro).await;
+            n += 1;
+            if n == 10 {
+                let _ = tx.send(Interno::NivelMicLocal(
+                    (pico.sqrt() * 100.0).clamp(0.0, 100.0),
+                ));
+                (pico, n) = (0.0, 0);
+            }
+        }
+        log::warn!("[mic] o concord-audio microfone parou");
+    });
+    Ok((fonte, filho))
+}
+
 fn inicia_audio_de_apps(apps: &[String]) -> Result<(NativeAudioSource, tokio::process::Child)> {
     let Some(bin) = crate::portal_tela::acha_concord_audio() else {
         bail!("o som da transmissão precisa do concord-audio, que não foi achado: reinstale o app");
@@ -3357,6 +3503,98 @@ mod tests {
             CANAIS,
             0,
         )
+    }
+
+    /// Diagnóstico do anel verde do próprio avatar (2026-10-18): uma trilha
+    /// local do microfone escutada pelo app recebe 0 quadros, sozinha
+    /// (`SO_MONITOR=1`), com chamada local ou sendo a própria trilha enviada
+    /// (`NA_ENVIADA=1`); o `audioLevel` do `media-source` no `getStats` mede,
+    /// inclusive com a trilha desligada. Fale durante o teste.
+    /// `cargo test -p lincast-chat monitor_mic_real -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn monitor_mic_real() {
+        use futures_util::StreamExt;
+        let fabrica = PeerConnectionFactory::default();
+        assert!(fabrica.acquire_platform_adm(), "sem ADM da plataforma");
+        fabrica.set_adm_recording_enabled(true);
+        fabrica.set_adm_playout_enabled(true);
+        let mut _pcs = Vec::new();
+        let mut enviada = None;
+        if std::env::var_os("SO_MONITOR").is_none() {
+            let a = fabrica
+                .create_peer_connection(RtcConfiguration::default())
+                .expect("pc a");
+            let b = fabrica
+                .create_peer_connection(RtcConfiguration::default())
+                .expect("pc b");
+            let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+            let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+            a.on_ice_candidate(Some(Box::new(move |c| {
+                let _ = tx_a.send(c);
+            })));
+            b.on_ice_candidate(Some(Box::new(move |c| {
+                let _ = tx_b.send(c);
+            })));
+            let (a2, b2) = (a.clone(), b.clone());
+            tokio::spawn(async move {
+                while let Some(c) = rx_a.recv().await {
+                    let _ = b2.add_ice_candidate(c).await;
+                }
+            });
+            tokio::spawn(async move {
+                while let Some(c) = rx_b.recv().await {
+                    let _ = a2.add_ice_candidate(c).await;
+                }
+            });
+            let mic = fabrica.create_device_audio_track("mic-a");
+            a.add_track(MediaStreamTrack::Audio(mic.clone()), &["voz-a".to_string()])
+                .expect("mic a");
+            negocia_teste(&a, &b).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            println!("conexão: {:?}", a.connection_state());
+            for i in 0..10 {
+                if i == 5 {
+                    mic.set_enabled(false);
+                    println!("mic desligado");
+                }
+                if let Ok(st) = a.get_stats().await {
+                    for r in st {
+                        if let libwebrtc::stats::RtcStats::MediaSource(m) = r
+                            && m.source.kind == "audio"
+                        {
+                            println!(
+                                "media-source {}: nível {:.4} energia {:.4}",
+                                m.source.track_identifier,
+                                m.audio.audio_level,
+                                m.audio.total_audio_energy
+                            );
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            enviada = Some(mic);
+            _pcs.push(a);
+            _pcs.push(b);
+        }
+        // `NA_ENVIADA=1`: mede a própria trilha que vai na chamada.
+        let track = match enviada {
+            Some(m) if std::env::var_os("NA_ENVIADA").is_some() => m,
+            _ => fabrica.create_device_audio_track("lincast-monitor-mic"),
+        };
+        let mut stream = libwebrtc::audio_stream::native::NativeAudioStream::new(track, 48000, 1);
+        let (mut quadros, mut pico) = (0u32, 0f32);
+        let _ = tokio::time::timeout(Duration::from_secs(4), async {
+            while let Some(f) = stream.next().await {
+                quadros += 1;
+                for &s in f.data.iter() {
+                    pico = pico.max((s as f32).abs() / 32768.0);
+                }
+            }
+        })
+        .await;
+        println!("monitor: {quadros} quadros, pico {pico:.4}");
     }
 
     /// Reprodução dos itens 4 e 5 (crash ao transmitir com som): duas

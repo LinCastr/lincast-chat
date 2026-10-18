@@ -11,6 +11,7 @@
 //! Bônus: se a captura de áudio cair, a chamada continua de pé.
 
 mod audio_apps;
+mod microfone;
 mod video_tela;
 
 use std::io::Write;
@@ -49,6 +50,12 @@ enum Comando {
         #[arg(long)]
         excluir_pid: Option<u32>,
     },
+    /// Microfone com supressão de ruído (RNNoise): PCM 16 bits, 48 kHz, mono.
+    Microfone {
+        /// `node.name` ou serial do microfone; sem isto, o padrão do sistema.
+        #[arg(long)]
+        alvo: Option<String>,
+    },
     /// Vídeo da tela: lê o PipeWire do portal (descritor na entrada padrão) e
     /// escreve quadros BGRA na saída padrão (ver `video_tela`).
     Video {
@@ -84,6 +91,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Comando::Microfone { alvo } => microfone::roda(alvo),
         Comando::Video { no, fps } => {
             // O descritor do portal chega como a entrada padrão (fd 0).
             // SAFETY: o app principal garante que o fd 0 é o socket do PipeWire

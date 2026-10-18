@@ -331,7 +331,7 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
         c.lateral,
     ))
     .padding(0)
-    .style(|_, _| button::Style::default())
+    .style(tema::botao_transparente)
     .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
 
     // A foto de 80px sobrepõe a base do banner.

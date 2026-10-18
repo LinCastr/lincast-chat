@@ -806,7 +806,23 @@ impl SalaAberta {
                         corpo = corpo.push(ui::chat::renderiza_bloco_codigo(linguagem, codigo));
                     }
                     ui::chat::TrechoMensagem::Texto(t) => {
-                        if !t.is_empty() {
+                        let chave = format!("{}#{idx}", m.id);
+                        if t.is_empty() {
+                        } else if let Some(sel) = self.selecionaveis.get(&chave) {
+                            let tam = if ui::chat::so_emoji(t) {
+                                44.0
+                            } else {
+                                tema::TEXTO_CHAT
+                            };
+                            let texto = ui::selecionavel::vista(&chave, sel, tam);
+                            corpo = corpo.push(if m.editada_em.is_some() && idx == 0 {
+                                row![texto, ui::chat::tag_editada()]
+                                    .align_y(Alignment::End)
+                                    .into()
+                            } else {
+                                texto
+                            });
+                        } else {
                             corpo = corpo.push(ui::chat::renderiza_texto_com_links(
                                 t,
                                 m.editada_em.is_some() && idx == 0,
@@ -835,16 +851,17 @@ impl SalaAberta {
             let img_elem = iced::widget::mouse_area(img_elem)
                 .on_enter(Msg::HoverGif(Some(chave_gif)))
                 .on_exit(Msg::HoverGif(None));
-            if let Some(url) = &m.gif {
-                corpo = corpo.push(
-                    button(img_elem)
-                        .padding(0)
-                        .style(tema::botao_secundario)
-                        .on_press(Msg::AbreLink(url.clone())),
-                );
-            } else {
-                corpo = corpo.push(img_elem.on_right_press(Msg::AbreMenuImagem(m.id.clone())));
-            }
+            // Clique abre a prévia grande no próprio app (GIF e imagem).
+            let titulo = if m.gif.is_some() { "GIF" } else { "Imagem" };
+            corpo = corpo.push(
+                img_elem
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Msg::AbreImagemMensagem {
+                        id: m.id.clone(),
+                        titulo: format!("{titulo} de {}", m.autor),
+                    })
+                    .on_right_press(Msg::AbreMenuImagem(m.id.clone())),
+            );
         } else if let Some(g) = &m.gif {
             corpo = corpo.push(ui::chat::gif_carregando(g));
         }

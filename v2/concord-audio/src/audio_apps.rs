@@ -46,6 +46,9 @@ pub struct AppDeAudio {
     pub binario: String,
     pub pid: Option<u32>,
     pub midia: String,
+    /// Nó de filtro ou virtual (equalizador, `filter-chain`, loopback): todo o
+    /// som do PC passa por ele, inclusive a voz da chamada.
+    pub virtual_: bool,
 }
 
 impl AppDeAudio {
@@ -107,6 +110,9 @@ fn le_app(id: u32, props: &DictRef) -> Option<AppDeAudio> {
             .get(*pw::keys::APP_PROCESS_ID)
             .and_then(|p| p.parse().ok()),
         midia: texto("media.name"),
+        virtual_: props.get("node.virtual") == Some("true")
+            || props.get("filter.smart") == Some("true")
+            || props.get("node.link-group").is_some(),
     })
 }
 
@@ -125,7 +131,10 @@ pub enum Filtro {
 
 impl Filtro {
     fn aceita(&self, app: &AppDeAudio, excluir_pid: Option<u32>) -> bool {
-        if app.pid == Some(std::process::id()) || (app.pid.is_some() && app.pid == excluir_pid) {
+        if app.virtual_
+            || app.pid == Some(std::process::id())
+            || (app.pid.is_some() && app.pid == excluir_pid)
+        {
             return false;
         }
         match self {
@@ -444,7 +453,20 @@ mod testes {
             binario: binario.into(),
             pid,
             midia: String::new(),
+            virtual_: false,
         }
+    }
+
+    #[test]
+    fn filtro_recusa_equalizador_e_outros_nos_virtuais() {
+        // Visto num PC real: o "Equalizador" do filter-chain não tem pid e
+        // leva o som do PC inteiro, com a voz da chamada junto.
+        let eq = AppDeAudio {
+            virtual_: true,
+            ..app("Equalizador", "", None)
+        };
+        assert!(!Filtro::TodosMenosEu.aceita(&eq, Some(4242)));
+        assert!(!Filtro::Apps(vec!["equalizador".into()]).aceita(&eq, None));
     }
 
     #[test]

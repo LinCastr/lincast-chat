@@ -204,7 +204,7 @@ pub fn modal<'a>(
                 .align_x(Alignment::End),
             ])
             .padding(0)
-            .style(|_, _| button::Style::default())
+            .style(tema::botao_transparente)
             .on_press(Msg::EditaGrupoPasso(Passo::MudarIcone));
             let mut col = column![
                 cabecalho("Editar grupo", None),

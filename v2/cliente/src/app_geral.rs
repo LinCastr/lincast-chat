@@ -75,6 +75,9 @@ impl App {
                 v.extend(m.banner_url.clone());
             }
         }
+        if let Some(g) = &self.gif_perfil {
+            v.extend(g.resultados.iter().map(|g| g.previa.clone()));
+        }
         // Prévias de GIF e GIF escolhido na janela de editar grupo.
         if let Some(m) = &self.modal_editar_grupo {
             v.extend(m.resultados_gif.iter().map(|g| g.previa.clone()));
@@ -131,6 +134,17 @@ impl App {
         )
     }
 
+    /// Texto selecionado numa mensagem da conversa aberta, se houver.
+    pub(crate) fn selecao_de_mensagem(&self) -> Option<String> {
+        let Tela::Sala(s) = &self.tela else {
+            return None;
+        };
+        s.selecionaveis
+            .values()
+            .find_map(|t| t.conteudo.selection())
+            .filter(|t| !t.is_empty())
+    }
+
     fn pede_imagens(&self) -> Vec<Task<Msg>> {
         self.urls_de_imagens()
             .into_iter()
@@ -164,6 +178,7 @@ impl App {
             saida_selecionada: cfg_audio.saida_guid.filter(|g| !g.is_empty()),
             testando_mic: false,
             nivel_mic: 0.0,
+            supressao_ruido: cfg_audio.supressao_ruido,
         };
         let cfg_aparencia = tema::carrega_aparencia_salva();
         let cfg_bandeja = ui::bandeja::carrega_config();
@@ -227,6 +242,7 @@ impl App {
                 modal_favoritos: None,
                 toast: None,
                 modal_editar_grupo: None,
+                gif_perfil: None,
                 amigos_cache: None,
                 erro_global: None,
                 cursor: iced::Point::ORIGIN,

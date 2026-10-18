@@ -31,6 +31,8 @@ struct Estado {
     /// Janelas: quando foram vistas pela primeira vez (e em que quadro por último).
     janelas: HashMap<String, (Instant, u64)>,
     quadro: u64,
+    /// Animações de duração fixa disparadas por um acontecimento (`dispara`).
+    eventos: HashMap<String, (Instant, Duration)>,
 }
 
 static ESTADO: Mutex<Option<Estado>> = Mutex::new(None);
@@ -147,6 +149,27 @@ pub fn abertura(id: &str) -> f32 {
     })
 }
 
+/// Começa (ou recomeça) a animação `id`, que dura `duracao`: peça do Wordle
+/// virando, linha tremendo. Ler com `progresso`.
+pub fn dispara(id: &str, duracao: Duration) {
+    if crate::desempenho::reduz_animacoes() {
+        return;
+    }
+    com(|e| {
+        e.eventos.insert(id.to_string(), (Instant::now(), duracao));
+    });
+}
+
+/// 0.0 … 1.0 enquanto a animação `id` roda; `None` antes e depois.
+pub fn progresso(id: &str) -> Option<f32> {
+    let agora = Instant::now();
+    com(|e| {
+        let (ini, dur) = e.eventos.get(id)?;
+        let p = agora.saturating_duration_since(*ini).as_secs_f32() / dur.as_secs_f32();
+        (p < 1.0).then_some(p)
+    })
+}
+
 /// Chamado a cada `view`: esquece as janelas que não foram desenhadas no
 /// quadro anterior (fecharam), para a próxima abertura animar de novo.
 pub fn inicio_quadro() {
@@ -171,6 +194,9 @@ pub fn ativo() -> bool {
             || e.janelas
                 .values()
                 .any(|(ini, _)| agora.saturating_duration_since(*ini) < ABERTURA)
+            || e.eventos
+                .values()
+                .any(|(ini, dur)| agora.saturating_duration_since(*ini) < *dur)
     })
 }
 
@@ -181,6 +207,8 @@ pub fn limpa() {
         e.itens.retain(|_, i| {
             i.dentro || agora.saturating_duration_since(i.desde) < Duration::from_secs(2)
         });
+        e.eventos
+            .retain(|_, (ini, dur)| agora.saturating_duration_since(*ini) < *dur);
     });
 }
 

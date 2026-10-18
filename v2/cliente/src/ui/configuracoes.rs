@@ -185,7 +185,8 @@ pub fn modal_configuracoes<'a>(ctx: ContextoConfiguracoes<'a>) -> Element<'a, Ms
     // 1. Barra lateral de abas (esquerda)
     let mut menu_lateral = Column::new().spacing(4).padding(14).width(260);
     // Cabeçalho do usuário (print 12): foto, nome e atalho para editar o perfil.
-    menu_lateral = menu_lateral.push(
+    menu_lateral = menu_lateral.push(crate::ui::efeitos::com_hover(
+        "cfg-cabecalho",
         button(
             row![
                 crate::ui::avatar::avatar(
@@ -198,7 +199,22 @@ pub fn modal_configuracoes<'a>(ctx: ContextoConfiguracoes<'a>) -> Element<'a, Ms
                 ),
                 column![
                     text(ctx.nome_atual).size(15).font(negrito()),
-                    text(format!("@{}", ctx.usuario)).size(12).style(fraco),
+                    // Com o mouse em cima, o @ dá lugar ao atalho (print 12).
+                    if crate::anim::dentro("cfg-cabecalho") {
+                        Element::from(
+                            row![
+                                crate::ui::efeitos::ico(icones::lapis(), 12.0, c.texto),
+                                text("Editar perfil").size(12),
+                            ]
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                        )
+                    } else {
+                        text(format!("@{}", ctx.usuario))
+                            .size(12)
+                            .style(fraco)
+                            .into()
+                    },
                 ]
                 .spacing(1),
             ]
@@ -207,9 +223,9 @@ pub fn modal_configuracoes<'a>(ctx: ContextoConfiguracoes<'a>) -> Element<'a, Ms
         )
         .width(Length::Fill)
         .padding([6, 8])
-        .style(tema::item_de_lista)
-        .on_press_maybe(None::<Msg>),
-    );
+        .style(tema::item_de_lista_hover)
+        .on_press(Msg::AbreEditarPerfil),
+    ));
     menu_lateral = menu_lateral.push(space().height(10));
 
     for aba in AbaConfig::TODAS {
@@ -593,6 +609,20 @@ fn renderiza_aba_audio<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
         row![btn_teste, medidor]
             .spacing(16)
             .align_y(Alignment::Center),
+    );
+
+    col = col.push(linha_interruptor(
+        "Supressão de ruído avançada (RNNoise)",
+        pa.supressao_ruido,
+        Msg::AlternaSupressaoRuido,
+    ));
+    col = col.push(
+        text(
+            "Tira teclado, ventilador e barulho de fundo do microfone. Sem o \
+             cancelamento de eco do sistema: use com fone de ouvido.",
+        )
+        .size(12)
+        .style(fraco),
     );
 
     col = col.push(divisoria());
@@ -1447,7 +1477,7 @@ fn interruptor<'a>(ativo: bool, msg: Msg) -> Element<'a, Msg> {
             }),
     )
     .padding(0)
-    .style(|_, _| button::Style::default())
+    .style(tema::botao_transparente)
     .on_press(msg)
     .into()
 }
@@ -1484,12 +1514,12 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
                 row![
                     button(miniatura_de_jogo(j.capa))
                         .padding(0)
-                        .style(|_, _| button::Style::default())
+                        .style(tema::botao_transparente)
                         .on_press(Msg::AbreVisaoJogo(visao.clone())),
                     column![
                         button(text(j.nome.clone()).size(14).font(negrito()))
                             .padding(0)
-                            .style(|_, _| button::Style::default())
+                            .style(tema::botao_transparente)
                             .on_press(Msg::AbreVisaoJogo(visao)),
                         row![
                             container(space().width(8).height(8)).style(move |_| container::Style {
@@ -1534,7 +1564,7 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
             .style(destaque)
         )
         .padding(0)
-        .style(|_, _| button::Style::default())
+        .style(tema::botao_transparente)
         .on_press(Msg::JogosRegAlternaSeletor),
     ]
     .spacing(6)
@@ -1653,7 +1683,7 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
 
         let miniatura = button(miniatura_de_jogo(j.capa))
             .padding(0)
-            .style(|_, _| button::Style::default())
+            .style(tema::botao_transparente)
             .on_press(Msg::AbreVisaoJogo(visao.clone()));
 
         let info_col: Element<'a, Msg> = if renomeando_este {
@@ -1686,7 +1716,7 @@ fn renderiza_aba_jogos<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
             let mut info = column![
                 button(text(j.nome.clone()).size(13).font(negrito()))
                     .padding(0)
-                    .style(|_, _| button::Style::default())
+                    .style(tema::botao_transparente)
                     .on_press(Msg::AbreVisaoJogo(visao)),
                 text(crate::jogos_registrados::ha_quanto_tempo(j.ultimo))
                     .size(11)

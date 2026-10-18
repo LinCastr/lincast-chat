@@ -541,14 +541,19 @@ pub fn renderiza_bloco_codigo<'a>(linguagem: &'a str, codigo: &'a str) -> Elemen
 /// Texto da mensagem: links clicáveis no meio do texto (quebrando a linha
 /// junto, como no Discord), emoji colorido e o "(editada)" no fim. Mensagem só
 /// de emoji (até 27) sai grande.
-pub fn renderiza_texto_com_links<'a>(texto: &'a str, editada: bool) -> Element<'a, Msg> {
-    use iced::widget::span;
-    let c = tema::cores();
-    let so_emoji = !texto.trim().is_empty()
+/// Mensagem só de emoji (até 27): aparece grande, como no Discord.
+pub fn so_emoji(texto: &str) -> bool {
+    !texto.trim().is_empty()
         && texto
             .chars()
             .all(|ch| ch.is_whitespace() || tema::eh_emoji(ch))
-        && texto.chars().filter(|ch| !ch.is_whitespace()).count() <= 27;
+        && texto.chars().filter(|ch| !ch.is_whitespace()).count() <= 27
+}
+
+pub fn renderiza_texto_com_links<'a>(texto: &'a str, editada: bool) -> Element<'a, Msg> {
+    use iced::widget::span;
+    let c = tema::cores();
+    let so_emoji = so_emoji(texto);
     let mut spans: Vec<iced::widget::text::Span<'a, String>> = Vec::new();
     for s in separa_links(texto) {
         match s {

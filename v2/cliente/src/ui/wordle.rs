@@ -3,13 +3,13 @@
 //! controles, a mensagem de "app" no chat e o estado do que está na tela.
 
 use iced::widget::{Column, button, column, container, row, space, text};
-use iced::{Alignment, Background, Border, Color, Element, Length, Task};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Task};
 
 use crate::api::{EstadoWordle, GrupoWordle, JogadorWordle};
 use crate::sala::Mensagem;
 use crate::tarefas::em_segundo_plano;
 use crate::ui::efeitos::ico;
-use crate::{Msg, SalaAberta, api, fraco, icones, negrito, tema};
+use crate::{Msg, SalaAberta, anim, api, fraco, icones, negrito, tema};
 
 const VERDE: Color = tema::rgb(0x538d4e);
 const AMARELO: Color = tema::rgb(0xb59f3b);
@@ -96,6 +96,20 @@ pub fn cores_do_teclado(est: &EstadoWordle) -> std::collections::HashMap<char, c
     m
 }
 
+/// Dia do Wordle no servidor: dias desde 1970 no horário de Brasília
+/// (`server.js::wordleDia`).
+fn dia_hoje() -> i64 {
+    (chrono::Utc::now().timestamp_millis() - 3 * 3600 * 1000).div_euclid(86_400_000)
+}
+
+/// A rodada `dia` ("20743" ou "20743_r2") é de um dia anterior a `hoje`?
+fn de_dia_anterior(dia: &str, hoje: i64) -> bool {
+    dia.split('_')
+        .next()
+        .and_then(|b| b.parse::<i64>().ok())
+        .is_some_and(|b| b < hoje)
+}
+
 fn mensagem_do_codigo(codigo: &str, texto: &str) -> String {
     match codigo {
         "curta" => "Not enough letters".into(),
@@ -134,6 +148,11 @@ impl SalaAberta {
                     Task::done(Msg::Wordle(WordleMsg::CarregaGrupo(None))),
                 ]);
             }
+            WordleMsg::Abre(Some(d)) if de_dia_anterior(&d, dia_hoje()) => {
+                // Mensagem de outro dia: como no Discord, joga-se a palavra de
+                // hoje, e a partida ganha a mensagem do dia no grupo.
+                return self.wordle_update(WordleMsg::Inicia);
+            }
             WordleMsg::Abre(dia_opt) => {
                 if self.wordle.is_none() {
                     self.wordle = Some(EstadoUiWordle::novo());
@@ -168,6 +187,10 @@ impl SalaAberta {
                 {
                     w.atual.push(c.to_ascii_lowercase());
                     w.erro = None;
+                    anim::dispara(
+                        &format!("wordle-pula-{}", w.atual.len() - 1),
+                        std::time::Duration::from_millis(130),
+                    );
                 }
             }
             WordleMsg::Apaga => {
@@ -185,6 +208,7 @@ impl SalaAberta {
                 }
                 if w.atual.len() < 5 {
                     w.erro = Some("Not enough letters".into());
+                    anim::dispara("wordle-treme", std::time::Duration::from_millis(450));
                     return Task::none();
                 }
                 w.enviando = true;
@@ -203,11 +227,17 @@ impl SalaAberta {
                     match r {
                         Ok(e) => {
                             acabou = e.fim.is_some();
+                            if let Some(i) = e.tentativas.len().checked_sub(1) {
+                                anim::dispara(&format!("wordle-revela-{i}"), REVELA);
+                            }
                             w.estado = Some(e);
                             w.atual.clear();
                             w.erro = None;
                         }
-                        Err((codigo, texto)) => w.erro = Some(mensagem_do_codigo(&codigo, &texto)),
+                        Err((codigo, texto)) => {
+                            anim::dispara("wordle-treme", std::time::Duration::from_millis(450));
+                            w.erro = Some(mensagem_do_codigo(&codigo, &texto));
+                        }
                     }
                 }
                 // O resumo do grupo (cores de quem jogou) muda a cada tentativa.
@@ -253,7 +283,41 @@ fn cor_da_letra(c: char) -> Color {
     }
 }
 
+/// Duração do giro de uma linha revelada (5 peças, uma depois da outra).
+const REVELA: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Quanto a peça `k` já girou (0 … 1) com a linha em `p` da animação.
+fn virada(p: f32, k: usize) -> f32 {
+    ((p * 1500.0 - k as f32 * 250.0) / 350.0).clamp(0.0, 1.0)
+}
+
+/// Espaço fixo da peça, para a animação não mexer no resto do tabuleiro.
+fn celula<'a>(peca: Element<'a, Msg>, lado: f32) -> Element<'a, Msg> {
+    container(peca)
+        .width(lado)
+        .height(lado)
+        .center_x(lado)
+        .center_y(lado)
+        .into()
+}
+
+/// Peça achatada na vertical (`altura` 0 … 1, o giro) e aumentada (`escala`,
+/// o pulo ao digitar).
+fn tile_escalado<'a>(
+    letra: Option<char>,
+    cor: Option<char>,
+    lado: f32,
+    altura: f32,
+    escala: f32,
+) -> Element<'a, Msg> {
+    tile_com(letra, cor, lado * escala, (lado * escala * altura).max(1.0))
+}
+
 fn tile<'a>(letra: Option<char>, cor: Option<char>, lado: f32) -> Element<'a, Msg> {
+    tile_com(letra, cor, lado, lado)
+}
+
+fn tile_com<'a>(letra: Option<char>, cor: Option<char>, lado: f32, alto: f32) -> Element<'a, Msg> {
     let fundo = cor.map(cor_da_letra);
     container(
         text(
@@ -261,14 +325,14 @@ fn tile<'a>(letra: Option<char>, cor: Option<char>, lado: f32) -> Element<'a, Ms
                 .map(|l| l.to_ascii_uppercase().to_string())
                 .unwrap_or_default(),
         )
-        .size(lado * 0.5)
+        .size(alto.min(lado) * 0.5)
         .font(negrito())
         .color(Color::WHITE),
     )
     .width(lado)
-    .height(lado)
+    .height(alto)
     .center_x(lado)
-    .center_y(lado)
+    .center_y(alto)
     .style(move |_| container::Style {
         background: fundo.map(Background::Color),
         border: Border {
@@ -457,20 +521,45 @@ fn jogo_no_tamanho<'a>(w: &'a EstadoUiWordle, tam: iced::Size) -> Element<'a, Ms
     for i in 0..max {
         let mut linha = row![].spacing(5);
         if let Some(t) = tentativas.get(i) {
-            for (l, cor) in t.palavra.chars().zip(t.cores.chars()) {
-                linha = linha.push(tile(Some(l), Some(cor), lado));
+            let revela = anim::progresso(&format!("wordle-revela-{i}"));
+            for (k, (l, cor)) in t.palavra.chars().zip(t.cores.chars()).enumerate() {
+                let peca = match revela.map(|p| virada(p, k)) {
+                    // Primeira metade do giro: ainda sem cor.
+                    Some(v) if v < 0.5 => tile_escalado(Some(l), None, lado, 1.0 - 2.0 * v, 1.0),
+                    Some(v) => tile_escalado(Some(l), Some(cor), lado, 2.0 * v - 1.0, 1.0),
+                    None => tile(Some(l), Some(cor), lado),
+                };
+                linha = linha.push(celula(peca, lado));
             }
         } else if i == tentativas.len() && fim.is_none() {
             let mut cs = w.atual.chars();
-            for _ in 0..5 {
-                linha = linha.push(tile(cs.next(), None, lado));
+            for k in 0..5 {
+                let pulo = anim::progresso(&format!("wordle-pula-{k}"))
+                    .map(|p| 1.0 + 0.12 * (p * std::f32::consts::PI).sin())
+                    .unwrap_or(1.0);
+                linha = linha.push(celula(
+                    tile_escalado(cs.next(), None, lado, 1.0, pulo),
+                    lado,
+                ));
             }
         } else {
             for _ in 0..5 {
                 linha = linha.push(tile(None, None, lado));
             }
         }
-        grade = grade.push(linha);
+        // Palavra recusada: a linha treme de um lado para o outro.
+        let desvio = if i == tentativas.len() {
+            anim::progresso("wordle-treme")
+                .map(|p| (p * std::f32::consts::PI * 6.0).sin() * 8.0 * (1.0 - p))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        grade = grade.push(container(linha).padding(Padding {
+            left: 8.0 + desvio,
+            right: 8.0 - desvio,
+            ..Default::default()
+        }));
     }
 
     let teclas = w.estado.as_ref().map(cores_do_teclado).unwrap_or_default();
@@ -647,6 +736,67 @@ fn mini_grade<'a>(j: &'a JogadorWordle) -> Element<'a, Msg> {
     col.into()
 }
 
+pub const LARGURA_TENTATIVAS: f32 = 250.0;
+pub const ALTURA_TENTATIVAS: f32 = 330.0;
+
+/// Popup com as tentativas de uma pessoa: avatar, situação e a grade grande.
+/// Só as cores (o servidor não manda as letras de ninguém).
+pub fn cartao_tentativas<'a>(j: &'a JogadorWordle, numero: i64) -> Element<'a, Msg> {
+    let c = tema::cores();
+    let situacao = match j.fim.as_deref() {
+        Some("ganhou") => format!("Solved in {}/6", j.n),
+        Some(_) => "Didn't solve it".to_string(),
+        None => format!("Playing — {}/6", j.n),
+    };
+    let mut grade = Column::new().spacing(5).align_x(Alignment::Center);
+    for i in 0..6 {
+        let mut r = row![].spacing(5);
+        match j.cores.get(i) {
+            Some(cores) => {
+                for ch in cores.chars() {
+                    r = r.push(tile(None, Some(ch), 30.0));
+                }
+            }
+            None => {
+                for _ in 0..5 {
+                    r = r.push(tile(None, None, 30.0));
+                }
+            }
+        }
+        grade = grade.push(r);
+    }
+    let topo = row![
+        crate::ui::avatar::avatar(j.avatar.as_deref(), &j.uid, &j.name, 40.0, None, c.lateral),
+        column![
+            text(j.name.as_str()).size(15).font(negrito()),
+            text(format!("Wordle No. {numero}")).size(12).style(fraco),
+            text(situacao).size(12).style(fraco),
+        ]
+        .spacing(2),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    container(column![topo, grade].spacing(14).align_x(Alignment::Center))
+        .width(LARGURA_TENTATIVAS)
+        .padding(16)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(c.lateral)),
+            text_color: Some(c.texto),
+            border: Border {
+                color: c.borda,
+                width: 1.0,
+                radius: tema::RAIO_GRANDE.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 /// "Ana was playing", "Ana and Bia were playing", "Ana, Bia and Caio were playing".
 pub fn frase_jogando(nomes: &[&str]) -> String {
     match nomes {
@@ -775,7 +925,7 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
                         .align_x(Alignment::Center)
                         .into()
                 };
-                container(dentro)
+                let cartao = container(dentro)
                     .padding(if sozinho { [16, 28] } else { [12, 14] })
                     .style(move |_| container::Style {
                         background: None,
@@ -785,6 +935,13 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
                             radius: tema::RAIO_GRANDE.into(),
                         },
                         ..Default::default()
+                    });
+                // Clicar na pessoa mostra as tentativas dela (só as cores).
+                iced::widget::mouse_area(cartao)
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Msg::AbreTentativasWordle {
+                        dia: g.dia.clone(),
+                        uid: j.uid.clone(),
                     })
                     .into()
             };
@@ -832,6 +989,14 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
 mod testes {
     use super::*;
     use crate::api::TentativaWordle;
+
+    #[test]
+    fn mensagem_de_outro_dia_abre_a_de_hoje() {
+        assert!(de_dia_anterior("20743", 20744));
+        assert!(de_dia_anterior("20743_r2", 20744));
+        assert!(!de_dia_anterior("20744_r3", 20744));
+        assert!(!de_dia_anterior("lixo", 20744));
+    }
 
     #[test]
     fn pecas_cabem_no_espaco() {

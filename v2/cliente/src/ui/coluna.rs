@@ -488,7 +488,7 @@ pub fn coluna<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
                     .style(tema::icone_cor(cores.texto_fraco))
             )
             .padding(2)
-            .style(|_, _| button::Style::default())
+            .style(tema::botao_transparente)
             .on_press(Msg::AbreCriarGrupo(None)),
         ]
         .align_y(Alignment::Center)

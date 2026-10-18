@@ -22,6 +22,9 @@ pub struct ConfigDispositivos {
     pub entrada_nome: Option<String>,
     pub saida_guid: Option<String>,
     pub saida_nome: Option<String>,
+    /// Microfone pelo RNNoise (`concord-audio microfone`) em vez do libwebrtc.
+    #[serde(default)]
+    pub supressao_ruido: bool,
 }
 
 fn arquivo_config() -> Option<PathBuf> {
@@ -197,6 +200,7 @@ mod tests {
             entrada_nome: Some("Microfone USB".into()),
             saida_guid: Some("fone-guid-2".into()),
             saida_nome: Some("Fone de Ouvido".into()),
+            supressao_ruido: true,
         };
 
         let json = serde_json::to_string(&cfg).expect("serializa");

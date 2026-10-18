@@ -198,6 +198,7 @@ impl App {
                     pessoas: Vec::new(),
                     mensagens: Vec::new(),
                     imagens: HashMap::new(),
+                    selecionaveis: HashMap::new(),
                     rascunho: String::new(),
                     na_chamada: false,
                     mudo: false,
@@ -689,6 +690,85 @@ impl App {
                     },
                 );
             }
+            Msg::AbreGifPerfil(avatar) => {
+                self.gif_perfil = Some(BuscaGifPerfil {
+                    avatar,
+                    busca: String::new(),
+                    resultados: Vec::new(),
+                    buscando: false,
+                    enviando: false,
+                    erro: None,
+                });
+                // Começa com os do momento (busca vazia).
+                return Task::done(Msg::GifPerfilSubmete);
+            }
+            Msg::GifPerfilBusca(v) => {
+                if let Some(g) = &mut self.gif_perfil {
+                    g.busca = v;
+                }
+            }
+            Msg::GifPerfilSubmete => {
+                let (Some(g), Some(token)) = (&mut self.gif_perfil, self.token.clone()) else {
+                    return Task::none();
+                };
+                g.buscando = true;
+                g.erro = None;
+                let (srv, termo) = (self.srv.clone(), g.busca.clone());
+                return em_segundo_plano(
+                    move || api::busca_gifs(&srv, &token, &termo).map_err(|e| format!("{e:#}")),
+                    Msg::GifPerfilResultados,
+                );
+            }
+            Msg::GifPerfilResultados(r) => {
+                if let Some(g) = &mut self.gif_perfil {
+                    g.buscando = false;
+                    match r {
+                        Ok(l) => g.resultados = l,
+                        Err(e) => g.erro = Some(e),
+                    }
+                }
+            }
+            Msg::GifPerfilEscolhe(url) => {
+                if let Some(g) = &mut self.gif_perfil {
+                    g.enviando = true;
+                    g.erro = None;
+                }
+                return em_segundo_plano(
+                    move || {
+                        use std::io::Read;
+                        let ag: ureq::Agent = ureq::Agent::config_builder()
+                            .timeout_global(Some(std::time::Duration::from_secs(20)))
+                            .build()
+                            .into();
+                        let mut r = ag.get(&url).call().map_err(|e| format!("{e}"))?;
+                        let mut bytes = Vec::new();
+                        r.body_mut()
+                            .as_reader()
+                            .take(20 * 1024 * 1024)
+                            .read_to_end(&mut bytes)
+                            .map_err(|e| format!("{e}"))?;
+                        Ok(bytes)
+                    },
+                    Msg::GifPerfilBaixado,
+                );
+            }
+            Msg::GifPerfilBaixado(r) => {
+                let Some(g) = self.gif_perfil.take() else {
+                    return Task::none();
+                };
+                match r {
+                    Ok(bytes) if g.avatar => return Task::done(Msg::UploadAvatar(bytes)),
+                    Ok(bytes) => return Task::done(Msg::UploadBanner(bytes)),
+                    Err(e) => {
+                        self.gif_perfil = Some(BuscaGifPerfil {
+                            enviando: false,
+                            erro: Some(format!("Não consegui baixar o GIF: {e}")),
+                            ..g
+                        });
+                    }
+                }
+            }
+            Msg::GifPerfilFecha => self.gif_perfil = None,
             Msg::UploadBanner(bytes) => {
                 if let Some(token) = &self.token {
                     let srv = self.srv.clone();
@@ -1015,6 +1095,14 @@ impl App {
             Msg::FechaVisaoJogo => {
                 self.modal_visao_jogo = None;
             }
+            Msg::AbreImagemMensagem { id, titulo } => {
+                self.modal_foto = Some(ModalFoto {
+                    url: String::new(),
+                    titulo,
+                    zoom: 1.0,
+                    mensagem: Some(id),
+                });
+            }
             Msg::AbreFoto { url, titulo } => {
                 let cmd = if avatar::precisa_baixar(&url) {
                     tarefas::baixa_imagem_de_perfil(
@@ -1029,6 +1117,7 @@ impl App {
                     url,
                     titulo,
                     zoom: 1.0,
+                    mensagem: None,
                 });
                 return cmd;
             }
@@ -1043,6 +1132,26 @@ impl App {
             Msg::ResetaZoomFoto => {
                 if let Some(f) = &mut self.modal_foto {
                     f.zoom = 1.0;
+                }
+            }
+            Msg::AlternaSupressaoRuido => {
+                let ligada = !self.painel_audio.supressao_ruido;
+                self.painel_audio.supressao_ruido = ligada;
+                let em_chamada = if let Tela::Sala(s) = &self.tela
+                    && s.na_chamada
+                {
+                    s.manda(sala::Comando::DefineSupressaoRuido(ligada));
+                    true
+                } else if let Some(ca) = &self.chamada_ativa {
+                    ca.manda(sala::Comando::DefineSupressaoRuido(ligada));
+                    true
+                } else {
+                    false
+                };
+                if !em_chamada {
+                    let mut cfg = crate::dispositivos::carrega_config();
+                    cfg.supressao_ruido = ligada;
+                    crate::dispositivos::salva_config(&cfg);
                 }
             }
             Msg::AlternaSomDoToque => {
@@ -1427,6 +1536,13 @@ impl App {
                 let mut c = crate::desempenho::atual();
                 c.gif_so_hover = !c.gif_so_hover;
                 crate::desempenho::salva(c);
+            }
+            Msg::AbreTentativasWordle { dia, uid } => {
+                self.menu_contexto = Some(MenuContexto {
+                    alvo: AlvoMenu::WordleJogador { dia, uid },
+                    x: self.cursor.x,
+                    y: self.cursor.y,
+                });
             }
             Msg::AbrePrevia { uid, nome, app } => {
                 self.menu_contexto = Some(MenuContexto {
@@ -2456,6 +2572,20 @@ impl App {
                 } else {
                     crate::relatorio::envia_ao_fechar(&self.srv, self.token.as_deref());
                     return iced::exit();
+                }
+            }
+            // Ctrl+C com texto de mensagem selecionado: copia pela própria
+            // seleção (guardada no conteúdo), sem depender do foco do editor.
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character(c),
+                modifiers,
+                ..
+            })) if c.as_str() == "c"
+                && modifiers.command()
+                && self.selecao_de_mensagem().is_some() =>
+            {
+                if let Some(t) = self.selecao_de_mensagem() {
+                    return iced::clipboard::write(t);
                 }
             }
             Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {

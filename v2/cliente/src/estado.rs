@@ -75,6 +75,8 @@ pub(crate) struct App {
     /// Aviso curto no topo ("Mensagem encaminhada!"), some sozinho.
     pub(crate) toast: Option<(String, std::time::Instant)>,
     pub(crate) modal_editar_grupo: Option<ui::editar_grupo::EstadoEditarGrupo>,
+    /// Buscador de GIF para a foto (`avatar`) ou o banner do perfil.
+    pub(crate) gif_perfil: Option<BuscaGifPerfil>,
     /// Última lista de amigos recebida (alimenta a janela de escolher amigos).
     pub(crate) amigos_cache: Option<api::RespostaAmigos>,
     /// Erro de ação (abrir conversa etc.) mostrado em faixa sobre qualquer tela.
@@ -95,10 +97,22 @@ pub(crate) struct App {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct BuscaGifPerfil {
+    pub avatar: bool,
+    pub busca: String,
+    pub resultados: Vec<crate::api::ItemGif>,
+    pub buscando: bool,
+    pub enviando: bool,
+    pub erro: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ModalFoto {
     pub url: String,
     pub titulo: String,
     pub zoom: f32,
+    /// Imagem ou GIF de uma mensagem do chat (id): vem do cache da conversa.
+    pub mensagem: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +147,11 @@ pub(crate) enum AlvoMenu {
         nome: String,
     },
     Conversa(String),
+    /// Tentativas de uma pessoa numa rodada do Wordle (clique na grade dela).
+    WordleJogador {
+        dia: String,
+        uid: String,
+    },
     /// Prévia de perfil ao clicar na foto ou no nome do autor de uma mensagem.
     Previa {
         uid: Option<String>,
@@ -213,6 +232,9 @@ pub(crate) struct SalaAberta {
     pub(crate) pessoas: Vec<Pessoa>,
     pub(crate) mensagens: Vec<Mensagem>,
     pub(crate) imagens: HashMap<String, image::Handle>,
+    /// Texto das mensagens em forma selecionável (`ui::selecionavel`), por
+    /// `id#trecho`. Mantido por `sincroniza_selecionaveis`.
+    pub(crate) selecionaveis: HashMap<String, crate::ui::selecionavel::TextoSelecionavel>,
     pub(crate) rascunho: String,
     pub(crate) na_chamada: bool,
     pub(crate) mudo: bool,
@@ -291,6 +313,8 @@ pub(crate) struct PainelAudio {
     pub(crate) saida_selecionada: Option<String>,
     pub(crate) testando_mic: bool,
     pub(crate) nivel_mic: f32,
+    /// Microfone pelo RNNoise (ver `dispositivos::ConfigDispositivos`).
+    pub(crate) supressao_ruido: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +508,13 @@ pub(crate) enum Msg {
     RemoveAvatar,
     EscolheArquivoBanner,
     UploadBanner(Vec<u8>),
+    AbreGifPerfil(bool),
+    GifPerfilBusca(String),
+    GifPerfilSubmete,
+    GifPerfilResultados(Result<Vec<crate::api::ItemGif>, String>),
+    GifPerfilEscolhe(String),
+    GifPerfilBaixado(Result<Vec<u8>, String>),
+    GifPerfilFecha,
     BannerAtualizado(Result<String, String>),
     RemoveBanner,
     TrocaAbaPerfil(ui::perfil::AbaPerfil),
@@ -502,6 +533,7 @@ pub(crate) enum Msg {
     AlternaNotificaMensagens,
     AlternaNotificaMencoes,
     AlternaSomDoToque,
+    AlternaSupressaoRuido,
     AlternaAutostart,
     AlternaEnviarRelatorio,
     JogosRegFiltro(String),
@@ -521,6 +553,11 @@ pub(crate) enum Msg {
     JogosRegAlternaSeletor,
     AbreVisaoJogo(ModalVisaoJogo),
     FechaVisaoJogo,
+    /// Prévia grande de uma imagem/GIF do chat, dentro do app.
+    AbreImagemMensagem {
+        id: String,
+        titulo: String,
+    },
     AbreFoto {
         url: String,
         titulo: String,
@@ -550,6 +587,12 @@ pub(crate) enum Msg {
     TickGif,
     AlternaReduzAnimacoes,
     AlternaGifSoHover,
+    /// Ação de seleção (clique, arrasto, Ctrl+A…) no texto de uma mensagem.
+    SelecaoTexto(String, iced::widget::text_editor::Action),
+    AbreTentativasWordle {
+        dia: String,
+        uid: String,
+    },
     AbrePrevia {
         uid: Option<String>,
         nome: String,
