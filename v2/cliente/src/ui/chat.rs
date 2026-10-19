@@ -621,25 +621,29 @@ pub fn detecta_mencao_rascunho(rascunho: &str) -> Option<&str> {
 }
 
 /// Filtra e ordena candidatos para autocompletar menção com base no prefixo.
+///
+/// Os candidatos são os membros da conversa (não só quem está na chamada:
+/// dá para citar quem está offline), menos a própria pessoa.
 pub fn filtra_candidatos_mencao(
     prefixo: &str,
-    pessoas: &[crate::sala::Pessoa],
+    membros: &[crate::avisos::Membro],
+    meu_usuario: Option<&str>,
 ) -> Vec<CandidatoMencao> {
     let p_lower = prefixo.to_lowercase();
-    let mut candidatos: Vec<CandidatoMencao> = pessoas
+    let mut candidatos: Vec<CandidatoMencao> = membros
         .iter()
-        .filter(|p| !p.eu)
-        .filter(|p| {
-            p.nome.to_lowercase().contains(&p_lower)
-                || p.uid
+        .filter(|m| !m.removida && m.usuario.as_deref() != meu_usuario)
+        .filter(|m| {
+            m.name.to_lowercase().contains(&p_lower)
+                || m.usuario
                     .as_deref()
                     .unwrap_or("")
                     .to_lowercase()
                     .contains(&p_lower)
         })
-        .map(|p| CandidatoMencao {
-            nome: p.nome.clone(),
-            arroba: p.uid.clone(),
+        .map(|m| CandidatoMencao {
+            nome: m.name.clone(),
+            arroba: m.usuario.clone(),
         })
         .collect();
 
@@ -659,8 +663,8 @@ pub fn menu_autocompletar_mencao<'a>(candidatos: &[CandidatoMencao]) -> Element<
     itens = itens.push(text("@ Mencionar:").size(12).style(fraco));
 
     for c in candidatos {
-        let rotulo = if let Some(arr) = &c.arroba {
-            format!("@{} ({})", c.nome, arr)
+        let rotulo = if let Some(arr) = c.arroba.as_ref().filter(|a| **a != c.nome) {
+            format!("@{} (@{})", c.nome, arr)
         } else {
             format!("@{}", c.nome)
         };
@@ -678,7 +682,12 @@ pub fn menu_autocompletar_mencao<'a>(candidatos: &[CandidatoMencao]) -> Element<
 }
 
 /// Verifica se o usuário local foi mencionado na mensagem.
-pub fn citou_voce(m: &crate::sala::Mensagem, meu_nome: &str, meu_uid: Option<&str>) -> bool {
+pub fn citou_voce(
+    m: &crate::sala::Mensagem,
+    meu_nome: &str,
+    meu_usuario: Option<&str>,
+    meu_uid: Option<&str>,
+) -> bool {
     if eh_minha_mensagem(m, meu_nome, meu_uid) {
         return false;
     }
@@ -691,9 +700,22 @@ pub fn citou_voce(m: &crate::sala::Mensagem, meu_nome: &str, meu_uid: Option<&st
     if !m.mencoes.is_empty() && m.mencoes.iter().any(|n| n.eq_ignore_ascii_case(meu_nome)) {
         return true;
     }
-    let alvo = m.texto.to_lowercase();
-    let arroba_nome = format!("@{}", meu_nome.to_lowercase());
-    alvo.contains(&arroba_nome)
+    texto_menciona(&m.texto, meu_nome) || meu_usuario.is_some_and(|u| texto_menciona(&m.texto, u))
+}
+
+/// O texto cita `@alvo` como palavra inteira, sem distinguir maiúsculas?
+/// (`@val` não cita quem se chama `val47`.)
+pub fn texto_menciona(texto: &str, alvo: &str) -> bool {
+    if alvo.is_empty() {
+        return false;
+    }
+    let t = texto.to_lowercase();
+    let a = format!("@{}", alvo.to_lowercase());
+    let fora_da_palavra = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
+    t.match_indices(&a).any(|(i, _)| {
+        fora_da_palavra(t[..i].chars().next_back())
+            && fora_da_palavra(t[i + a.len()..].chars().next())
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1544,9 +1566,9 @@ mod tests {
         };
 
         // Outro mencionou Val
-        assert!(citou_voce(&m, "Val", Some("u1")));
+        assert!(citou_voce(&m, "Val", None, Some("u1")));
         // Não mencionou Bob
-        assert!(!citou_voce(&m, "Bob", Some("u99")));
+        assert!(!citou_voce(&m, "Bob", None, Some("u99")));
 
         // Própria mensagem não cita a si mesmo para alerta
         let m_propria = crate::sala::Mensagem {
@@ -1569,7 +1591,18 @@ mod tests {
             sistema: None,
             extra: Default::default(),
         };
-        assert!(!citou_voce(&m_propria, "Val", Some("u1")));
+        assert!(!citou_voce(&m_propria, "Val", None, Some("u1")));
+    }
+
+    #[test]
+    fn mencao_por_nome_ou_usuario_com_palavra_inteira() {
+        assert!(texto_menciona("oi @Ttiag, tudo?", "ttiag"));
+        assert!(texto_menciona("@ttiag", "Ttiag"));
+        assert!(texto_menciona("valeu @Val Gabriel!", "Val Gabriel"));
+        assert!(!texto_menciona("oi @val47", "val"));
+        assert!(!texto_menciona("email a@ttiag.com", "ttiag"));
+        assert!(!texto_menciona("sem arroba ttiag", "ttiag"));
+        assert!(!texto_menciona("@", ""));
     }
 
     #[test]

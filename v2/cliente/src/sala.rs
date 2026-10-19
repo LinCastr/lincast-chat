@@ -216,6 +216,11 @@ pub enum Evento {
         meu_id: String,
     },
     Pessoas(Vec<Pessoa>),
+    /// Alguém começou (`ativo`) ou parou de assistir a minha transmissão.
+    AlguemAssiste {
+        nome: String,
+        ativo: bool,
+    },
     Historico(Vec<Mensagem>),
     Chat(Box<Mensagem>),
     MensagemEditada {
@@ -246,6 +251,8 @@ pub enum Evento {
         mudo_forcado: bool,
     },
     Aviso(String),
+    /// A conexão com o servidor voltou: some o aviso de "conexão perdida".
+    Reconectado,
     Recusada(String),
     Caiu(String),
     PttTransmitindo(bool),
@@ -391,6 +398,8 @@ pub enum Comando {
     TrocarAtividade(Option<crate::api::Atividade>),
     EnviarReacao(String),
     Cutucar(String),
+    /// Avisa o dono da transmissão que comecei/parei de assistir.
+    Assistindo(String, bool),
     /// Id do som e volume (0–100) do emissor.
     EnviarSom(String, u8),
     EnviarTraco(crate::ui::quadro::Traco),
@@ -415,6 +424,8 @@ pub struct Entrada {
     pub sala: String,
     /// Nome de exibição da conta (o servidor não o repete no `room-info`).
     pub nome: String,
+    /// Login da conta: menção por `@usuario` também cita a pessoa.
+    pub usuario: Option<String>,
 }
 
 // --- escada de bitrate de tela ---------------------------------------------
@@ -852,8 +863,7 @@ async fn roda_interno(
                             "conversa": entrada.sala,
                             "espectador": !ator.na_chamada,
                         }));
-                        ator.emite(Evento::Aviso("Reconectado ao servidor.".into()))
-                            .await;
+                        ator.emite(Evento::Reconectado).await;
                         break;
                     }
                     Err(e) => {
@@ -1240,6 +1250,12 @@ impl Ator {
                 Ok(())
             }
             Interno::NivelMicLocal(nivel) => {
+                // Medidor do teste/popup de voz: na chamada, a trilha local
+                // escutada pelo app entrega 0 quadros (`monitor_mic_real`); o
+                // nível certo é este, do `getStats` (ou do leitor do RNNoise).
+                if self.teste_mic.is_some() {
+                    self.emite(Evento::NivelMic(nivel)).await;
+                }
                 let mut mic_ativo = !(self.mudo || self.surdo || self.mudo_forcado);
                 if self.ptt_ativo && mic_ativo {
                     mic_ativo = self.ptt_segurando;
@@ -1482,6 +1498,13 @@ impl Ator {
                 self.envia(json!({
                     "type": "reacao",
                     "emoji": emoji,
+                }));
+            }
+            Comando::Assistindo(dono, ativo) => {
+                self.envia(json!({
+                    "type": "assistindo",
+                    "to": dono,
+                    "ativo": ativo,
                 }));
             }
             Comando::Cutucar(id) => {
@@ -2956,6 +2979,11 @@ impl Ator {
                 if let Some(dia) = msg["dia"].as_str() {
                     self.emite(Evento::WordleGrupoMudou(dia.to_string())).await;
                 }
+            }
+            "assistindo" => {
+                let nome = msg["name"].as_str().unwrap_or("Alguém").to_string();
+                let ativo = msg["ativo"].as_bool().unwrap_or(true);
+                self.emite(Evento::AlguemAssiste { nome, ativo }).await;
             }
             "cutucada" => {
                 let de_nome = msg["name"].as_str().unwrap_or("Alguém").to_string();

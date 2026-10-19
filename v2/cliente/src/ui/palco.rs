@@ -225,11 +225,7 @@ fn barra<'a>(b: &BarraDoPalco) -> Element<'a, Msg> {
             "Dispositivos de voz",
             b.menu_dispositivos_aberto,
             false,
-            Some(if b.menu_dispositivos_aberto {
-                Msg::FechaConfigAudio
-            } else {
-                Msg::AbreConfigAudio
-            }),
+            Some(Msg::AlternaPopupVoz),
         ),
     ]);
     let midia = grupo(vec![

@@ -170,14 +170,16 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
             row![
                 bolinha_status(d.status, 10.0),
                 text(rotulo_status(d.status)).size(14).width(Length::Fill),
+                // O submenu abre à direita: a seta aponta para ele, aberto ou
+                // não; aberto, ela só acende.
                 ico(
-                    if d.presenca_aberta {
-                        icones::seta_baixo()
-                    } else {
-                        icones::seta_direita()
-                    },
+                    icones::seta_direita(),
                     14.0,
-                    c.texto_fraco,
+                    if d.presenca_aberta {
+                        c.texto
+                    } else {
+                        c.texto_fraco
+                    },
                 ),
             ]
             .spacing(12)

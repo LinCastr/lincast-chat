@@ -190,6 +190,77 @@ impl App {
         Subscription::batch(subs)
     }
 
+    /// Popup da seta do microfone: acima do botão clicado (como os outros da
+    /// barra da chamada), com a lista de dispositivos ao lado quando aberta.
+    fn com_popup_voz<'a>(&'a self, base: Element<'a, Msg>) -> Element<'a, Msg> {
+        let (Some(p), Tela::Sala(s)) = (&self.popup_voz, &self.tela) else {
+            return base;
+        };
+        let pa = &self.painel_audio;
+        let dados = ui::popup_voz::DadosPopupVoz {
+            entradas: &pa.entradas,
+            saidas: &pa.saidas,
+            entrada_sel: pa.entrada_selecionada.as_deref(),
+            saida_sel: pa.saida_selecionada.as_deref(),
+            volume_mic: self.volume_mic,
+            volume_saida: self.volume_saida,
+            nivel: pa.nivel_mic,
+            surdo: s.surdo,
+            sub: p.sub,
+        };
+        let mut conteudo = row![ui::popup_voz::principal(&dados)].spacing(6);
+        if let Some(sub) = p.sub {
+            conteudo = conteudo.push(iced::widget::column![
+                space().height(ui::popup_voz::deslocamento_da_lista(sub)),
+                ui::popup_voz::lista(&dados, sub),
+            ]);
+        }
+        let largura = if p.sub.is_some() {
+            2.0 * ui::popup_voz::LARGURA + 6.0
+        } else {
+            ui::popup_voz::LARGURA
+        };
+        let janela = self.janela;
+        let esq = (p.x - ui::popup_voz::LARGURA / 2.0)
+            .min(janela.width - largura - 8.0)
+            .max(8.0);
+        // Acima do botão quando cabe; a barra fica no topo da conversa, então
+        // quase sempre abre embaixo dele (como no Discord).
+        let cabe_acima = p.y - 14.0 >= ui::popup_voz::ALTURA + 8.0;
+        let padding = if cabe_acima {
+            iced::Padding {
+                left: esq,
+                bottom: (janela.height - p.y + 14.0).max(8.0),
+                ..Default::default()
+            }
+        } else {
+            iced::Padding {
+                left: esq,
+                top: (p.y + 24.0)
+                    .min(janela.height - ui::popup_voz::ALTURA - 8.0)
+                    .max(8.0),
+                ..Default::default()
+            }
+        };
+        let fundo =
+            iced::widget::mouse_area(container(space()).width(Length::Fill).height(Length::Fill))
+                .on_press(Msg::FechaPopupVoz)
+                .on_right_press(Msg::FechaPopupVoz);
+        let posicionado = container(iced::widget::opaque(ui::efeitos::entrada(
+            "popup-voz",
+            conteudo,
+        )))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(if cabe_acima {
+            Alignment::End
+        } else {
+            Alignment::Start
+        })
+        .padding(padding);
+        iced::widget::stack([base, fundo.into(), posicionado.into()]).into()
+    }
+
     /// Sobrepõe o menu de contexto aberto (se houver) à tela.
     fn com_menu_de_contexto<'a>(&'a self, base: Element<'a, Msg>) -> Element<'a, Msg> {
         use ui::menu::{coluna, item, posiciona, separador, sobre, titulo};
@@ -1142,6 +1213,8 @@ impl App {
             ]
             .into();
         }
+
+        tela_final = self.com_popup_voz(tela_final);
 
         // Menu de contexto (botão direito / foto e banner): por cima das janelas
         // abertas, senão ele abre escondido atrás da janela de editar perfil.

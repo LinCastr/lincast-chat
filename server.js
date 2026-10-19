@@ -4624,6 +4624,17 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Aviso ao dono de uma transmissão de que alguém começou/parou de assistir.
+    if (msg.type === 'assistindo' && currentRoom) {
+      const room = rooms.get(currentRoom);
+      if (!room) return;
+      if (!podeAgir('assistindo', 1, 300)) return;
+      const alvo = room.get(typeof msg.to === 'string' ? msg.to : '');
+      if (!alvo || msg.to === myId) return;
+      safeSend(alvo.ws, JSON.stringify({ type: 'assistindo', from: myId, name: myName, ativo: msg.ativo !== false }));
+      return;
+    }
+
     // Voto de enquete. Mesma estrada da reação: o valor fica na própria
     // mensagem no disco, e a sala inteira recebe a contagem nova.
     if (msg.type === 'voto' && currentRoom) {

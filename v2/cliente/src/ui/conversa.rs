@@ -423,7 +423,8 @@ pub fn cabecalho<'a>(
         crate::ui::efeitos::com_dica(
             botao_icone(
                 icones::pin(),
-                est.fixadas_ativas,
+                // Sem mensagem fixada o botão fica desligado; aceso enganava.
+                est.fixadas_ativas && est.tem_fixada,
                 false,
                 est.tem_fixada.then_some(Msg::AlternaFixadas),
             ),

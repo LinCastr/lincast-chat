@@ -197,19 +197,9 @@ pub fn instala(info: &InfoAtualizacao) -> Result<String, String> {
     let (Some(pacote), Some(sha)) = (&info.pacote, &info.sha256) else {
         return Err("a release não traz o pacote para Linux x86_64".into());
     };
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // Aberto por wrapper (`ld.so app`), o executável em uso é o carregador do
-    // sistema, não o app: trocá-lo quebraria a instalação. Só se atualiza
-    // sozinho o que está instalado com o nome do próprio app.
-    if exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_none_or(|n| n != "lincast-chat")
-    {
-        return Err(
-            "este app foi aberto por um script; atualize rodando o instalador de novo".into(),
-        );
-    }
+    let exe = exe_do_app().ok_or(
+        "não achei o executável do app; atualize rodando o instalador de novo".to_string(),
+    )?;
     let dir = exe
         .parent()
         .ok_or("não achei a pasta do app")?
@@ -266,11 +256,33 @@ pub fn instala(info: &InfoAtualizacao) -> Result<String, String> {
 /// Abre o app de novo (já atualizado). `LINCAST_ATUALIZADO` evita que o novo
 /// processo tente atualizar outra vez de cara.
 pub fn reabre() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe)
-            .env("LINCAST_ATUALIZADO", "1")
-            .spawn();
+    let Ok(atual) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(&atual);
+    // Aberto por wrapper (`ld.so app`): reabre do mesmo jeito, pelo carregador.
+    if nome_e_do_app(&atual) {
+        // executável próprio, nada a acrescentar
+    } else if let Some(app) = exe_do_app() {
+        cmd.arg(app);
     }
+    let _ = cmd.env("LINCAST_ATUALIZADO", "1").spawn();
+}
+
+fn nome_e_do_app(p: &std::path::Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()) == Some("lincast-chat")
+}
+
+/// Caminho do executável do app que deve ser trocado. Aberto direto, é o
+/// `current_exe`. Aberto por wrapper (`ld.so app`), o `current_exe` é o carregador
+/// do sistema (nunca se troca), mas o `argv[0]` é o caminho do próprio app.
+fn exe_do_app() -> Option<std::path::PathBuf> {
+    let atual = std::env::current_exe().ok()?;
+    if nome_e_do_app(&atual) {
+        return Some(atual);
+    }
+    let arg0 = std::fs::canonicalize(std::env::args_os().next()?).ok()?;
+    (nome_e_do_app(&arg0) && arg0.is_file()).then_some(arg0)
 }
 
 /// Faixa discreta no topo, dispensável.

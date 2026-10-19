@@ -25,6 +25,9 @@ pub struct PrefsConversas {
     /// Volume do toque de chamada (0–100).
     #[serde(default = "volume_toque_padrao")]
     pub volume_toque: u8,
+    /// Sons de retorno da chamada (mudo, fone, tela, quem assiste), só para você.
+    #[serde(default = "verdadeiro")]
+    pub sons_de_retorno: bool,
     /// Volume dos efeitos sonoros e soundboard (0–100).
     #[serde(default = "volume_efeitos_padrao")]
     pub volume_efeitos: u8,
@@ -55,6 +58,7 @@ impl Default for PrefsConversas {
             notificar_mensagens: true,
             notificar_mencoes: true,
             som_do_toque: true,
+            sons_de_retorno: true,
             volume_toque: 80,
             volume_efeitos: crate::som::VOLUME_PADRAO,
         }

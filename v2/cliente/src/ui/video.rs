@@ -64,6 +64,8 @@ pub struct EstadoTransmissao<'a> {
     pub tela_cheia: Option<&'a (String, bool)>,
     /// A pessoa escondeu a prévia da própria tela.
     pub ocultar_propria: bool,
+    /// Quantas pessoas assistem a minha transmissão.
+    pub espectadores: usize,
 }
 
 /// A transmissão de tela dos outros só toca depois do clique; a sua própria
@@ -140,7 +142,10 @@ pub(crate) fn renderiza_caixa_video<'a>(
         .unwrap_or("Amigo");
     let rotulo_txt = if v.dono == meu_id {
         if v.de_tela {
-            "Sua tela".into()
+            match est.espectadores {
+                0 => "Sua tela".into(),
+                n => format!("Sua tela · {n} assistindo"),
+            }
         } else {
             "Sua câmera".into()
         }

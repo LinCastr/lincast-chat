@@ -17,6 +17,10 @@ impl App {
             }
             self.sincroniza_conversa_ativa();
         }
+        // O popup da seta do microfone só existe com a chamada à vista.
+        if self.popup_voz.is_some() && !matches!(&self.tela, Tela::Sala(s) if s.na_chamada) {
+            self.fecha_popup_voz();
+        }
         match msg {
             Msg::ImagemBaixada { url, bytes } => avatar::guarda(&url, bytes),
             Msg::Avisos(ev) => {
@@ -192,6 +196,7 @@ impl App {
                         token,
                         sala: id,
                         nome: self.eu.as_ref().map(|e| e.name.clone()).unwrap_or_default(),
+                        usuario: self.eu.as_ref().and_then(|e| e.usuario.clone()),
                     },
                     comandos: None,
                     meu_id: String::new(),
@@ -214,6 +219,7 @@ impl App {
                     ptt_transmitindo: false,
                     portal_global_ativo: false,
                     painel_audio: None,
+                    popup_voz_aberto: false,
                     nivel_mic_atual: 0.0,
                     falando_no_mudo: false,
                     aviso_eco: false,
@@ -225,6 +231,7 @@ impl App {
                     painel_ancora: iced::Point::ORIGIN,
                     video_em_tela_cheia: None,
                     assistindo: std::collections::HashSet::new(),
+                    espectadores_da_tela: std::collections::HashSet::new(),
                     ultimo_movimento: std::time::Instant::now(),
                     ultimo_falante: None,
                     imagem_pendente: None,
@@ -1154,6 +1161,13 @@ impl App {
                     crate::dispositivos::salva_config(&cfg);
                 }
             }
+            Msg::AlternaSonsDeRetorno => {
+                self.prefs_conversas.sons_de_retorno = !self.prefs_conversas.sons_de_retorno;
+                self.prefs_conversas.salva();
+                if self.prefs_conversas.sons_de_retorno {
+                    som::toca_retorno(som::Retorno::MicAberto, self.prefs_conversas.volume_efeitos);
+                }
+            }
             Msg::AlternaSomDoToque => {
                 self.prefs_conversas.som_do_toque = !self.prefs_conversas.som_do_toque;
                 self.prefs_conversas.salva();
@@ -2043,6 +2057,19 @@ impl App {
                 if let Ok(dados) = &res {
                     self.pedidos_pendentes = dados.recebidos.len();
                     self.amigos_cache = Some(dados.clone());
+                    // A lista é a foto mais nova do status: sem isto a coluna e
+                    // os membros seguiam "Online" depois de a pessoa sumir sem
+                    // fechar o canal (o servidor não avisa quando o "visto" vence).
+                    for a in &dados.amigos {
+                        if let Some(st) = &a.status
+                            && self.avisos.status_amigos.get(&a.uid) != Some(st)
+                        {
+                            self.avisos.aplica(&avisos::Evento::StatusAmigo {
+                                uid: a.uid.clone(),
+                                status: st.clone(),
+                            });
+                        }
+                    }
                 }
                 if let Tela::Salas(s) = &mut self.tela {
                     s.carregando_amigos = false;
@@ -2243,6 +2270,7 @@ impl App {
                 }
             },
             Msg::AbreConfiguracoes(aba_opt) => {
+                self.fecha_popup_voz();
                 let aba = aba_opt.unwrap_or_default();
                 self.modal_config = Some(aba);
                 self.modal_outro_perfil = None;
@@ -2410,6 +2438,9 @@ impl App {
                 }
             }
             Msg::SelecionaEntradaAudio(guid) => {
+                if let Some(p) = &mut self.popup_voz {
+                    p.sub = None;
+                }
                 self.painel_audio.entrada_selecionada = Some(guid.clone());
                 dispositivos::salva_dispositivo_gravacao(&guid);
                 if let Tela::Sala(s) = &mut self.tela {
@@ -2425,6 +2456,9 @@ impl App {
                 }
             }
             Msg::SelecionaSaidaAudio(guid) => {
+                if let Some(p) = &mut self.popup_voz {
+                    p.sub = None;
+                }
                 self.painel_audio.saida_selecionada = Some(guid.clone());
                 dispositivos::salva_dispositivo_reproducao(&guid);
                 if let Tela::Sala(s) = &mut self.tela {
@@ -2540,6 +2574,45 @@ impl App {
                 self.capturando_ptt = false;
                 if let Tela::Sala(s) = &mut self.tela {
                     s.capturando_ptt = false;
+                }
+            }
+            Msg::AlternaPopupVoz => {
+                if self.popup_voz.is_some() {
+                    self.fecha_popup_voz();
+                    return Task::none();
+                }
+                let Tela::Sala(s) = &mut self.tela else {
+                    return Task::none();
+                };
+                s.popup_voz_aberto = true;
+                s.manda(sala::Comando::AtualizaDispositivosAudio);
+                self.popup_voz = Some(PopupVoz {
+                    x: self.cursor.x,
+                    y: self.cursor.y,
+                    sub: None,
+                });
+                let volumes = em_segundo_plano(
+                    || {
+                        (
+                            sistema_audio::le_volume(true),
+                            sistema_audio::le_volume(false),
+                        )
+                    },
+                    |(mic, saida)| Msg::VolumesSistemaLidos(mic, saida),
+                );
+                // O "Nível de entrada" vem do mesmo medidor do teste de microfone
+                // (na chamada ele lê a trilha que já existe, sem abrir outra).
+                let nivel = if self.painel_audio.testando_mic {
+                    Task::none()
+                } else {
+                    Task::done(Msg::AlternaTesteMic)
+                };
+                return Task::batch([volumes, nivel]);
+            }
+            Msg::FechaPopupVoz => self.fecha_popup_voz(),
+            Msg::AlternaSubVoz(sub) => {
+                if let Some(p) = &mut self.popup_voz {
+                    p.sub = (p.sub != Some(sub)).then_some(sub);
                 }
             }
             Msg::AbreConfigAudio => {
@@ -2669,8 +2742,10 @@ impl App {
                 || self.modal_meu_perfil.is_some()
                 || self.modal_outro_perfil.is_some()
                 || self.modal_confirmacao.is_some()
-                || self.modal_manual_aberto =>
+                || self.modal_manual_aberto
+                || self.popup_voz.is_some() =>
             {
+                self.fecha_popup_voz();
                 if self.painel_audio.testando_mic {
                     self.painel_audio.testando_mic = false;
                     self.painel_audio.nivel_mic = 0.0;

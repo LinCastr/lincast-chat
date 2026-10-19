@@ -570,15 +570,28 @@ impl SalaAberta {
                     self.video_fixado = None;
                 } else {
                     // Focar uma transmissão também começa a assisti-la.
-                    self.assistindo.insert((dono.clone(), de_tela));
+                    if de_tela
+                        && dono != self.meu_id
+                        && self.assistindo.insert((dono.clone(), de_tela))
+                    {
+                        self.manda(Comando::Assistindo(dono.clone(), true));
+                    }
                     self.video_fixado = Some((dono, de_tela));
                 }
             }
             Msg::AssisteTransmissao(dono, de_tela) => {
-                self.assistindo.insert((dono, de_tela));
+                if self.assistindo.insert((dono.clone(), de_tela)) && de_tela && dono != self.meu_id
+                {
+                    self.manda(Comando::Assistindo(dono, true));
+                }
             }
             Msg::PausaTransmissao(dono, de_tela) => {
-                self.assistindo.remove(&(dono.clone(), de_tela));
+                if self.assistindo.remove(&(dono.clone(), de_tela))
+                    && de_tela
+                    && dono != self.meu_id
+                {
+                    self.manda(Comando::Assistindo(dono.clone(), false));
+                }
                 if self.video_em_tela_cheia.as_ref() == Some(&(dono, de_tela)) {
                     self.video_em_tela_cheia = None;
                 }

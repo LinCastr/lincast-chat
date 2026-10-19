@@ -27,6 +27,7 @@ pub mod painel;
 pub mod palco;
 pub mod perfil;
 pub mod popup_perfil;
+pub mod popup_voz;
 pub mod previa;
 pub mod quadro;
 pub mod reacao;

@@ -451,7 +451,7 @@ fn opcoes(lista: &[crate::dispositivos::DispositivoAudio]) -> Vec<OpcaoDisp> {
 
 /// "default: USB PnP Audio Device Mono" → "USB PnP Audio Device Mono (padrão)".
 /// O libwebrtc cola o prefixo cru no dispositivo padrão do sistema.
-fn nome_de_dispositivo(nome: &str) -> String {
+pub(crate) fn nome_de_dispositivo(nome: &str) -> String {
     match nome.strip_prefix("default:") {
         Some(resto) if !resto.trim().is_empty() => format!("{} (padrão)", resto.trim()),
         _ => nome.to_string(),
@@ -478,7 +478,7 @@ fn campo_rotulado<'a>(rotulo_txt: &'a str, corpo: Element<'a, Msg>) -> Column<'a
 }
 
 /// Slider 0–100% do volume do sistema (aplica ao soltar).
-fn slider_volume<'a>(mic: bool, valor: Option<f32>) -> Element<'a, Msg> {
+pub(crate) fn slider_volume<'a>(mic: bool, valor: Option<f32>) -> Element<'a, Msg> {
     let c = tema::cores();
     match valor {
         Some(v) => row![
@@ -586,7 +586,9 @@ fn renderiza_aba_audio<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
     .style(tema::botao_primario)
     .on_press(Msg::AlternaTesteMic);
     const SEGMENTOS: usize = 40;
-    let acesos = (pa.nivel_mic.clamp(0.0, 1.0) * SEGMENTOS as f32).round() as usize;
+    // O ator manda o nível de 0 a 100 (raiz do pico × 100); tratado como 0–1,
+    // qualquer som acendia a barra inteira.
+    let acesos = ((pa.nivel_mic / 100.0).clamp(0.0, 1.0) * SEGMENTOS as f32).round() as usize;
     let medidor = row((0..SEGMENTOS).map(|i| -> Element<'a, Msg> {
         let ligado = pa.testando_mic && i < acesos;
         container(space().width(5).height(26))
@@ -1182,6 +1184,12 @@ fn renderiza_aba_notificacoes<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a
         "Tocar o toque quando alguém ligar. O aviso do sistema vem sempre que a janela está fora de foco.",
         Msg::AlternaSomDoToque,
     ));
+    col = col.push(linha(
+        ctx.prefs.sons_de_retorno,
+        "Sons de retorno",
+        "Tons só para você ao mutar o microfone, desligar o fone, entrar ou sair da chamada, e ao começar, parar ou assistir transmissões.",
+        Msg::AlternaSonsDeRetorno,
+    ));
     col.into()
 }
 
@@ -1441,7 +1449,7 @@ pub fn modal_visao_jogo<'a>(j: &'a crate::estado::ModalVisaoJogo) -> Element<'a,
     crate::ui::efeitos::janela_fechavel("visao-jogo", painel.into(), 0.65, Msg::FechaVisaoJogo)
 }
 
-fn interruptor<'a>(ativo: bool, msg: Msg) -> Element<'a, Msg> {
+pub(crate) fn interruptor<'a>(ativo: bool, msg: Msg) -> Element<'a, Msg> {
     let c = tema::cores();
     let bg_cor = if ativo { c.destaque } else { c.elevado };
     let dot_cor = if ativo {

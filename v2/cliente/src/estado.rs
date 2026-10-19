@@ -51,6 +51,8 @@ pub(crate) struct App {
     /// Texto da busca da coluna da esquerda.
     pub(crate) filtro_conversas: String,
     pub(crate) menu_status_aberto: bool,
+    /// Popup da seta do microfone na barra da chamada (`ui::popup_voz`).
+    pub(crate) popup_voz: Option<PopupVoz>,
     pub(crate) pedidos_pendentes: usize,
     /// Nome de conversas recém-abertas que o canal de avisos ainda não listou.
     pub(crate) titulos_extra: HashMap<String, String>,
@@ -160,6 +162,14 @@ pub(crate) enum AlvoMenu {
     },
 }
 
+/// Onde o popup da seta do microfone foi aberto (posição do clique) e qual
+/// lista de dispositivos está aberta ao lado.
+pub(crate) struct PopupVoz {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) sub: Option<ui::popup_voz::SubVoz>,
+}
+
 pub(crate) struct MenuContexto {
     pub(crate) alvo: AlvoMenu,
     pub(crate) x: f32,
@@ -250,6 +260,8 @@ pub(crate) struct SalaAberta {
     pub(crate) ptt_transmitindo: bool,
     pub(crate) portal_global_ativo: bool,
     pub(crate) painel_audio: Option<PainelAudio>,
+    /// O popup da seta do microfone (estado no `App`) está aberto: acende o botão.
+    pub(crate) popup_voz_aberto: bool,
     pub(crate) nivel_mic_atual: f32,
     pub(crate) falando_no_mudo: bool,
     pub(crate) aviso_eco: bool,
@@ -264,6 +276,8 @@ pub(crate) struct SalaAberta {
     pub(crate) video_em_tela_cheia: Option<(String, bool)>,
     /// Transmissões que a pessoa clicou para assistir.
     pub(crate) assistindo: std::collections::HashSet<(String, bool)>,
+    /// Quem está assistindo a minha transmissão (nomes), pelo aviso do servidor.
+    pub(crate) espectadores_da_tela: std::collections::HashSet<String>,
     /// Último movimento do mouse (esconde os controles da tela cheia).
     pub(crate) ultimo_movimento: std::time::Instant,
     pub(crate) ultimo_falante: Option<String>,
@@ -412,6 +426,9 @@ pub(crate) enum Msg {
     AbreConfigAudio,
     #[allow(dead_code)]
     FechaConfigAudio,
+    AlternaPopupVoz,
+    FechaPopupVoz,
+    AlternaSubVoz(ui::popup_voz::SubVoz),
     SelecionaEntradaAudio(String),
     SelecionaSaidaAudio(String),
     AlternaTesteMic,
@@ -533,6 +550,7 @@ pub(crate) enum Msg {
     AlternaNotificaMensagens,
     AlternaNotificaMencoes,
     AlternaSomDoToque,
+    AlternaSonsDeRetorno,
     AlternaSupressaoRuido,
     AlternaAutostart,
     AlternaEnviarRelatorio,

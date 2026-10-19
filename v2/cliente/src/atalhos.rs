@@ -273,9 +273,13 @@ pub fn para_hyprland(combo: &str) -> String {
 }
 
 /// A linha pronta para colar no `hyprland.conf`.
+///
+/// O push-to-talk usa `bindn` (não consome a tecla): com `bind`, o Hyprland
+/// engole a tecla em todos os programas, e o padrão é o Espaço.
 pub fn linha_hyprland(acao: &str, combo: &str) -> String {
+    let bind = if acao == "ptt" { "bindn" } else { "bind" };
     format!(
-        "bind = {}, global, {ID_DO_APP}:{acao}",
+        "{bind} = {}, global, {ID_DO_APP}:{acao}",
         para_hyprland(combo)
     )
 }
@@ -321,6 +325,10 @@ mod testes {
         assert_eq!(
             linha_hyprland("mute", "Ctrl + Shift + M"),
             "bind = CTRL SHIFT, M, global, lincast-chat:mute"
+        );
+        assert_eq!(
+            linha_hyprland("ptt", "Espaço"),
+            "bindn = , SPACE, global, lincast-chat:ptt"
         );
     }
 

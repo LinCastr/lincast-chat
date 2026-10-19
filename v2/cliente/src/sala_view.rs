@@ -288,6 +288,7 @@ impl SalaAberta {
             tela_cheia: None,
             assistindo: &self.assistindo,
             ocultar_propria: self.previa_propria_oculta,
+            espectadores: self.espectadores_da_tela.len(),
             controles_visiveis: true,
         };
         let em_foco = self
@@ -313,7 +314,7 @@ impl SalaAberta {
                 mudo_forcado: self.mudo_forcado,
                 camera: self.com_camera,
                 apresentando: self.apresentando,
-                menu_dispositivos_aberto: self.painel_audio.is_some(),
+                menu_dispositivos_aberto: self.popup_voz_aberto,
                 menu_atividades_aberto: self.painel == Some(PainelFlutuante::Atividades),
                 menu_mais_aberto: self.painel == Some(PainelFlutuante::MaisPalco),
                 sons_abertos: self.painel == Some(PainelFlutuante::Sons),
@@ -373,6 +374,7 @@ impl SalaAberta {
                     tela_cheia: self.video_em_tela_cheia.as_ref(),
                     assistindo: &self.assistindo,
                     ocultar_propria: self.previa_propria_oculta,
+                    espectadores: self.espectadores_da_tela.len(),
                     controles_visiveis: self.ultimo_movimento.elapsed()
                         < std::time::Duration::from_secs(2),
                 },
@@ -466,6 +468,7 @@ impl SalaAberta {
                     tela_cheia: None,
                     assistindo: &self.assistindo,
                     ocultar_propria: self.previa_propria_oculta,
+                    espectadores: self.espectadores_da_tela.len(),
                     controles_visiveis: true,
                 },
             ));
@@ -597,7 +600,8 @@ impl SalaAberta {
 
         if let Some(filtro) = ui::chat::detecta_comando_rascunho(&self.rascunho) {
             // Só sugere: quem decide é o servidor (login "val47").
-            let eh_dev = self.entrada.nome == "val47";
+            // `entrada.nome` é o nome de exibição ("Val47"); o login está na conversa.
+            let eh_dev = info.and_then(|i| i.meu_usuario) == Some("val47");
             let eh_grupo = self.entrada.sala.starts_with("grp_");
             let sugestoes = ui::chat::filtra_comandos_chat(filtro, eh_dev, eh_grupo);
             if !sugestoes.is_empty() {
@@ -606,7 +610,9 @@ impl SalaAberta {
         }
 
         if let Some(prefixo) = ui::chat::detecta_mencao_rascunho(&self.rascunho) {
-            let candidatos = ui::chat::filtra_candidatos_mencao(prefixo, &self.pessoas);
+            let candidatos = info.map_or_else(Vec::new, |i| {
+                ui::chat::filtra_candidatos_mencao(prefixo, &i.conversa.membros, i.meu_usuario)
+            });
             if !candidatos.is_empty() {
                 area_envio = area_envio.push(ui::chat::menu_autocompletar_mencao(&candidatos));
             }
@@ -662,37 +668,45 @@ impl SalaAberta {
             .on_press(Msg::AlternaPainelGif);
         let botao_gif = ui::efeitos::com_hover("botao-gif", botao_gif);
 
-        let mut envio = row![
+        // Com o popup aberto, a dica sairia em cima dele (como na barra da chamada).
+        let mais_aberto = self.painel == Some(PainelFlutuante::Mais);
+        let botao_mais = botao_icone(
+            icones::mais(),
+            mais_aberto,
+            false,
+            Some(Msg::AlternaMenuMais),
+        );
+        let botao_mais = if mais_aberto {
+            botao_mais
+        } else {
             crate::ui::efeitos::com_dica(
-                botao_icone(
-                    icones::mais(),
-                    self.painel == Some(PainelFlutuante::Mais),
-                    false,
-                    Some(Msg::AlternaMenuMais)
-                ),
+                botao_mais,
                 "Anexar e mais",
-                iced::widget::tooltip::Position::Top
-            ),
-            campo,
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+                iced::widget::tooltip::Position::Top,
+            )
+        };
+        let emoji_aberto = self.painel == Some(PainelFlutuante::Emoji);
+        let botao_emoji = ui::efeitos::botao_icone_anim(
+            "botao-emoji",
+            icones::smile(),
+            emoji_aberto,
+            false,
+            Some(Msg::AlternaMenuEmoji),
+            ui::efeitos::Efeito::EmojiAleatorio,
+        );
+        let botao_emoji = if emoji_aberto {
+            botao_emoji
+        } else {
+            crate::ui::efeitos::com_dica(botao_emoji, "Emoji", iced::widget::tooltip::Position::Top)
+        };
+        let mut envio = row![botao_mais, campo]
+            .spacing(6)
+            .align_y(Alignment::Center);
         if self.gif_ativo && self.sussurro_alvos.is_empty() {
             envio = envio.push(botao_gif);
         }
         let envio = envio
-            .push(crate::ui::efeitos::com_dica(
-                ui::efeitos::botao_icone_anim(
-                    "botao-emoji",
-                    icones::smile(),
-                    self.painel == Some(PainelFlutuante::Emoji),
-                    false,
-                    Some(Msg::AlternaMenuEmoji),
-                    ui::efeitos::Efeito::EmojiAleatorio,
-                ),
-                "Emoji",
-                iced::widget::tooltip::Position::Top,
-            ))
+            .push(botao_emoji)
             .push(crate::ui::efeitos::com_dica(
                 botao_icone(
                     icones::enviar(),
@@ -883,7 +897,12 @@ impl SalaAberta {
         if self.seletor_reacao.as_deref() == Some(&m.id) {
             corpo = corpo.push(ui::chat::seletor_rapido_emoji(&m.id));
         }
-        let me_mencionou = ui::chat::citou_voce(m, &self.entrada.nome, self.meu_uid.as_deref());
+        let me_mencionou = ui::chat::citou_voce(
+            m,
+            &self.entrada.nome,
+            self.entrada.usuario.as_deref(),
+            self.meu_uid.as_deref(),
+        );
         let mut cont = container(corpo)
             .padding(iced::Padding {
                 top: if cabecalho { 10.0 } else { 0.0 },

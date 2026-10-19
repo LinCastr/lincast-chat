@@ -365,6 +365,22 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
     let cores = tema::cores();
     let nome = ctx.eu.map(|e| e.name.as_str()).unwrap_or("");
     let usuario = ctx.eu.and_then(|e| e.usuario.as_deref());
+    // Status personalizado no lugar de "Online", como no Discord.
+    let subtitulo = ctx
+        .eu
+        .and_then(|e| e.perfil.as_ref())
+        .and_then(|p| p.status_custom.as_ref())
+        .filter(|s| !s.vencido() && !(s.texto.is_empty() && s.emoji.is_empty()))
+        .map(|s| {
+            let t = format!("{} {}", s.emoji, s.texto).trim().to_string();
+            // A linha divide espaço com os botões de mic/fone/engrenagem.
+            if t.chars().count() > 16 {
+                format!("{}…", t.chars().take(15).collect::<String>())
+            } else {
+                t
+            }
+        })
+        .unwrap_or_else(|| ui::status::rotulo_status(ctx.status).to_string());
     let id = row![
         // Mesma chave (uid) de todo o resto, senão a cor de fundo do avatar
         // sem foto saía diferente aqui e no chat.
@@ -378,9 +394,10 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
         ),
         column![
             text(nome).size(14).font(negrito()),
-            text(ui::status::rotulo_status(ctx.status))
+            text(subtitulo)
                 .size(12)
-                .style(fraco),
+                .style(fraco)
+                .wrapping(iced::widget::text::Wrapping::None),
         ]
         .width(Length::Fill),
     ]

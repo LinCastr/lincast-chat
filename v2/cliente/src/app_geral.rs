@@ -103,6 +103,28 @@ impl App {
     /// O toque deve soar? Para quem está sendo chamado, enquanto houver toque.
     /// Para quem chamou: enquanto ninguém além de mim estiver na chamada e
     /// ainda houver gente sendo chamada (alguém entrou ou parou de chamar: cala).
+    /// Fecha o popup da seta do microfone e para o medidor que ele ligou.
+    pub(crate) fn fecha_popup_voz(&mut self) {
+        if self.popup_voz.take().is_none() {
+            return;
+        }
+        if let Tela::Sala(s) = &mut self.tela {
+            s.popup_voz_aberto = false;
+        }
+        if let Some(ca) = &mut self.chamada_ativa {
+            ca.popup_voz_aberto = false;
+        }
+        if self.painel_audio.testando_mic {
+            self.painel_audio.testando_mic = false;
+            self.painel_audio.nivel_mic = 0.0;
+            if let Tela::Sala(s) = &mut self.tela {
+                s.manda(sala::Comando::ParaTesteMic);
+            } else if let Some(ca) = &mut self.chamada_ativa {
+                ca.manda(sala::Comando::ParaTesteMic);
+            }
+        }
+    }
+
     pub(crate) fn deve_tocar(&self) -> bool {
         if !self.avisos.toques.is_empty() {
             return true;
@@ -224,6 +246,7 @@ impl App {
                 avisos: avisos::EstadoAvisos::default(),
                 filtro_conversas: String::new(),
                 menu_status_aberto: false,
+                popup_voz: None,
                 pedidos_pendentes: 0,
                 titulos_extra: HashMap::new(),
                 menu_contexto: None,
@@ -305,11 +328,10 @@ impl App {
             return;
         }
         let meu = self.eu.as_ref().and_then(|e| e.usuario.as_deref());
-        let mencao = meu.is_some_and(|u| {
-            previa
-                .to_lowercase()
-                .contains(&format!("@{}", u.to_lowercase()))
-        });
+        // Mesma regra do destaque no chat: `@usuario` ou `@nome de exibição`.
+        let meu_nome = self.eu.as_ref().map(|e| e.name.as_str()).unwrap_or("");
+        let mencao = meu.is_some_and(|u| ui::chat::texto_menciona(previa, u))
+            || ui::chat::texto_menciona(previa, meu_nome);
         let silenciada = self.prefs_conversas.silenciadas.contains(conversa);
         let permite = if mencao {
             self.prefs_conversas.notificar_mencoes

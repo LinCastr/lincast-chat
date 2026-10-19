@@ -38,7 +38,40 @@ impl App {
                     p.iter().map(|x| x.id.as_str()).collect();
                 s.digitando_remotos
                     .retain(|id, _| ids.contains(id.as_str()));
+                if self.prefs_conversas.sons_de_retorno
+                    && let Some(r) =
+                        som::retorno_de_transmissao_alheia(&s.pessoas, &p).or_else(|| {
+                            s.na_chamada
+                                .then(|| som::retorno_de_chegada(&s.pessoas, &p))
+                                .flatten()
+                        })
+                {
+                    som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                }
+                s.espectadores_da_tela
+                    .retain(|n| p.iter().any(|x| &x.nome == n));
                 s.pessoas = p;
+            }
+            Evento::AlguemAssiste { nome, ativo } => {
+                if ativo {
+                    s.espectadores_da_tela.insert(nome.clone());
+                } else {
+                    s.espectadores_da_tela.remove(&nome);
+                }
+                if ativo && s.apresentando {
+                    s.aviso_cutucada = Some(ui::reacao::AvisoCutucada {
+                        texto: format!("{nome} está assistindo sua transmissão."),
+                        tempo_restante_ms: 2500,
+                    });
+                }
+                if self.prefs_conversas.sons_de_retorno && s.apresentando {
+                    let r = if ativo {
+                        som::Retorno::AlguemAssiste
+                    } else {
+                        som::Retorno::AlguemParouDeAssistir
+                    };
+                    som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                }
             }
             Evento::Historico(h) => {
                 s.mensagens = h;
@@ -185,6 +218,9 @@ impl App {
                 }
             }
             Evento::VideoFechou { dono, de_tela } => {
+                // Na próxima transmissão da pessoa é preciso clicar de novo (e
+                // ela é avisada de novo).
+                s.assistindo.remove(&(dono.clone(), de_tela));
                 s.videos
                     .retain(|v| !(v.dono == dono && v.de_tela == de_tela));
                 if s.video_fixado.as_ref() == Some(&(dono.clone(), de_tela)) {
@@ -207,6 +243,23 @@ impl App {
                 com_camera,
                 mudo_forcado,
             } => {
+                let antes = som::EstadoPropio {
+                    na_chamada: s.na_chamada,
+                    mudo: s.mudo,
+                    surdo: s.surdo,
+                    apresentando: s.apresentando,
+                };
+                let depois = som::EstadoPropio {
+                    na_chamada,
+                    mudo,
+                    surdo,
+                    apresentando,
+                };
+                if self.prefs_conversas.sons_de_retorno {
+                    for r in som::retornos_da_mudanca(antes, depois) {
+                        som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                    }
+                }
                 s.na_chamada = na_chamada;
                 if na_chamada && s.chamada_desde.is_none() {
                     s.chamada_desde = Some(std::time::Instant::now());
@@ -216,6 +269,9 @@ impl App {
                 s.mudo = mudo;
                 s.surdo = surdo;
                 s.apresentando = apresentando;
+                if !apresentando {
+                    s.espectadores_da_tela.clear();
+                }
                 s.com_camera = com_camera;
                 s.mudo_forcado = mudo_forcado;
                 self.atualiza_bandeja();
@@ -276,6 +332,7 @@ impl App {
                 }
             }
             Evento::Aviso(a) => s.aviso = Some(a),
+            Evento::Reconectado => s.aviso = None,
             Evento::Recusada(motivo) => {
                 let tarefa = self.vai_pras_salas();
                 if let Tela::Salas(salas) = &mut self.tela {
@@ -401,7 +458,40 @@ impl App {
                 {
                     c.meu_uid = eu.uid.clone();
                 }
+                if self.prefs_conversas.sons_de_retorno
+                    && let Some(r) =
+                        som::retorno_de_transmissao_alheia(&c.pessoas, &p).or_else(|| {
+                            c.na_chamada
+                                .then(|| som::retorno_de_chegada(&c.pessoas, &p))
+                                .flatten()
+                        })
+                {
+                    som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                }
+                c.espectadores_da_tela
+                    .retain(|n| p.iter().any(|x| &x.nome == n));
                 c.pessoas = p;
+            }
+            Evento::AlguemAssiste { nome, ativo } => {
+                if ativo {
+                    c.espectadores_da_tela.insert(nome.clone());
+                } else {
+                    c.espectadores_da_tela.remove(&nome);
+                }
+                if ativo && c.apresentando {
+                    c.aviso_cutucada = Some(ui::reacao::AvisoCutucada {
+                        texto: format!("{nome} está assistindo sua transmissão."),
+                        tempo_restante_ms: 2500,
+                    });
+                }
+                if self.prefs_conversas.sons_de_retorno && c.apresentando {
+                    let r = if ativo {
+                        som::Retorno::AlguemAssiste
+                    } else {
+                        som::Retorno::AlguemParouDeAssistir
+                    };
+                    som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                }
             }
             Evento::MeuEstado {
                 na_chamada,
@@ -411,6 +501,23 @@ impl App {
                 com_camera,
                 mudo_forcado,
             } => {
+                let antes = som::EstadoPropio {
+                    na_chamada: c.na_chamada,
+                    mudo: c.mudo,
+                    surdo: c.surdo,
+                    apresentando: c.apresentando,
+                };
+                let depois = som::EstadoPropio {
+                    na_chamada,
+                    mudo,
+                    surdo,
+                    apresentando,
+                };
+                if self.prefs_conversas.sons_de_retorno {
+                    for r in som::retornos_da_mudanca(antes, depois) {
+                        som::toca_retorno(r, self.prefs_conversas.volume_efeitos);
+                    }
+                }
                 c.na_chamada = na_chamada;
                 if na_chamada && c.chamada_desde.is_none() {
                     c.chamada_desde = Some(std::time::Instant::now());
@@ -420,6 +527,9 @@ impl App {
                 c.mudo = mudo;
                 c.surdo = surdo;
                 c.apresentando = apresentando;
+                if !apresentando {
+                    c.espectadores_da_tela.clear();
+                }
                 c.com_camera = com_camera;
                 c.mudo_forcado = mudo_forcado;
                 self.atualiza_bandeja();

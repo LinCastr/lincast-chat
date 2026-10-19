@@ -392,6 +392,200 @@ impl Drop for ToqueSonoro {
     }
 }
 
+/// Sons de retorno da interface: só quem fez a ação (ou recebeu o aviso)
+/// ouve, nunca vão para a chamada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retorno {
+    MicMudo,
+    MicAberto,
+    FoneDesligado,
+    FoneLigado,
+    EntrouNaChamada,
+    SaiuDaChamada,
+    TelaIniciada,
+    TelaParada,
+    OutroTransmite,
+    OutroFechouTransmissao,
+    AlguemAssiste,
+    AlguemParouDeAssistir,
+    OutroEntrou,
+    OutroSaiu,
+}
+
+/// Notas de cada retorno: (frequência em Hz, início em s, duração em s, onda).
+/// Onda: 0 seno, 1 triângulo, 2 quadrada suave.
+fn notas_do_retorno(r: Retorno) -> &'static [(f32, f32, f32, u8)] {
+    match r {
+        // Mic: dois tons curtos, descendo ao mutar e subindo ao abrir.
+        Retorno::MicMudo => &[(520.0, 0.0, 0.07, 0), (330.0, 0.07, 0.10, 0)],
+        Retorno::MicAberto => &[(330.0, 0.0, 0.07, 0), (520.0, 0.07, 0.10, 0)],
+        // Fone: três tons mais graves, para não confundir com o mic.
+        Retorno::FoneDesligado => &[
+            (440.0, 0.0, 0.06, 1),
+            (330.0, 0.06, 0.06, 1),
+            (220.0, 0.12, 0.12, 1),
+        ],
+        Retorno::FoneLigado => &[
+            (220.0, 0.0, 0.06, 1),
+            (330.0, 0.06, 0.06, 1),
+            (440.0, 0.12, 0.12, 1),
+        ],
+        Retorno::EntrouNaChamada => &[
+            (523.25, 0.0, 0.09, 0),
+            (659.25, 0.09, 0.09, 0),
+            (783.99, 0.18, 0.16, 0),
+        ],
+        Retorno::SaiuDaChamada => &[
+            (783.99, 0.0, 0.09, 0),
+            (659.25, 0.09, 0.09, 0),
+            (523.25, 0.18, 0.16, 0),
+        ],
+        // Tela: varredura brilhante (quadrada suave) para começar e parar.
+        Retorno::TelaIniciada => &[
+            (392.0, 0.0, 0.08, 2),
+            (587.33, 0.08, 0.08, 2),
+            (880.0, 0.16, 0.14, 2),
+        ],
+        Retorno::TelaParada => &[
+            (880.0, 0.0, 0.08, 2),
+            (587.33, 0.08, 0.08, 2),
+            (392.0, 0.16, 0.14, 2),
+        ],
+        // Outros: sinos (seno agudo), bem diferentes dos de cima.
+        Retorno::OutroTransmite => &[(1046.5, 0.0, 0.12, 0), (1318.5, 0.12, 0.20, 0)],
+        Retorno::OutroFechouTransmissao => &[(1318.5, 0.0, 0.12, 0), (1046.5, 0.12, 0.20, 0)],
+        Retorno::AlguemAssiste => &[(1174.7, 0.0, 0.07, 0), (1568.0, 0.07, 0.07, 0)],
+        Retorno::AlguemParouDeAssistir => &[(1568.0, 0.0, 0.07, 0), (1174.7, 0.07, 0.07, 0)],
+        // Chegada e saída de outra pessoa da chamada: pulso grave único.
+        Retorno::OutroEntrou => &[(587.33, 0.0, 0.08, 1), (880.0, 0.08, 0.12, 1)],
+        Retorno::OutroSaiu => &[(880.0, 0.0, 0.08, 1), (587.33, 0.08, 0.12, 1)],
+    }
+}
+
+pub fn sintetiza_retorno(r: Retorno) -> Vec<u8> {
+    let taxa = TAXA_AMOSTRAGEM as f32;
+    let notas = notas_do_retorno(r);
+    let fim = notas.iter().map(|n| n.1 + n.2).fold(0.0_f32, f32::max) + 0.05;
+    let mut amostras = vec![0.0_f32; (fim * taxa) as usize];
+    for &(freq, inicio, dur, onda) in notas {
+        let i0 = (inicio * taxa) as usize;
+        let n = (dur * taxa) as usize;
+        for k in 0..n {
+            let t = k as f32 / taxa;
+            let fase = (t * freq).fract();
+            let v = match onda {
+                0 => (2.0 * PI * fase).sin(),
+                1 => 4.0 * (fase - 0.5).abs() - 1.0,
+                _ => (2.0 * PI * fase).sin().signum() * 0.5 + (2.0 * PI * fase).sin() * 0.5,
+            };
+            let ataque = (t / 0.005).min(1.0);
+            let queda = (1.0 - t / dur).clamp(0.0, 1.0);
+            if let Some(a) = amostras.get_mut(i0 + k) {
+                *a += v * 0.5 * ataque * queda;
+            }
+        }
+    }
+    gera_wav(&amostras, TAXA_AMOSTRAGEM)
+}
+
+/// Estado da minha chamada, para decidir qual retorno tocar numa mudança.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EstadoPropio {
+    pub na_chamada: bool,
+    pub mudo: bool,
+    pub surdo: bool,
+    pub apresentando: bool,
+}
+
+/// Retornos devidos pela mudança `antes` → `depois`. Surdo também muta o
+/// microfone, então a mudança de fone vale pelas duas.
+pub fn retornos_da_mudanca(antes: EstadoPropio, depois: EstadoPropio) -> Vec<Retorno> {
+    let mut v = Vec::new();
+    if antes.na_chamada != depois.na_chamada {
+        v.push(if depois.na_chamada {
+            Retorno::EntrouNaChamada
+        } else {
+            Retorno::SaiuDaChamada
+        });
+        return v;
+    }
+    if antes.surdo != depois.surdo {
+        v.push(if depois.surdo {
+            Retorno::FoneDesligado
+        } else {
+            Retorno::FoneLigado
+        });
+    } else if antes.mudo != depois.mudo {
+        v.push(if depois.mudo {
+            Retorno::MicMudo
+        } else {
+            Retorno::MicAberto
+        });
+    }
+    if antes.apresentando != depois.apresentando {
+        v.push(if depois.apresentando {
+            Retorno::TelaIniciada
+        } else {
+            Retorno::TelaParada
+        });
+    }
+    v
+}
+
+/// Retorno devido à mudança de quem transmite a tela (fora eu) entre duas
+/// listas de pessoas: começou, ou parou sem sair da chamada.
+pub fn retorno_de_transmissao_alheia(
+    antes: &[crate::sala::Pessoa],
+    depois: &[crate::sala::Pessoa],
+) -> Option<Retorno> {
+    let mudou = |quer: bool| {
+        depois.iter().any(|n| {
+            !n.eu
+                && n.apresentando == quer
+                && antes.iter().any(|a| a.id == n.id && a.apresentando != quer)
+        })
+    };
+    if mudou(true) {
+        Some(Retorno::OutroTransmite)
+    } else if mudou(false) {
+        Some(Retorno::OutroFechouTransmissao)
+    } else {
+        None
+    }
+}
+
+/// Alguém (fora eu) entrou ou saiu da chamada entre duas listas de pessoas.
+/// Só conta quem está na chamada, não quem só olha a conversa (espectador).
+pub fn retorno_de_chegada(
+    antes: &[crate::sala::Pessoa],
+    depois: &[crate::sala::Pessoa],
+) -> Option<Retorno> {
+    let na_chamada =
+        |l: &[crate::sala::Pessoa], id: &str| l.iter().any(|p| p.id == id && !p.espectador);
+    if depois
+        .iter()
+        .any(|p| !p.eu && !p.espectador && !na_chamada(antes, &p.id))
+    {
+        Some(Retorno::OutroEntrou)
+    } else if antes
+        .iter()
+        .any(|p| !p.eu && !p.espectador && !na_chamada(depois, &p.id))
+    {
+        Some(Retorno::OutroSaiu)
+    } else {
+        None
+    }
+}
+
+/// Toca um som de retorno em segundo plano, no volume dos efeitos.
+pub fn toca_retorno(r: Retorno, volume: u8) {
+    std::thread::spawn(move || {
+        let mut wav = sintetiza_retorno(r);
+        aplica_volume(&mut wav, volume);
+        reproduz_wav(&wav);
+    });
+}
+
 /// Reproduz um som do soundboard em segundo plano.
 pub fn toca_som(id: &str, volume: u8) {
     let id_str = id.to_string();
@@ -447,6 +641,134 @@ mod tests {
         let mut w3 = original;
         aplica_volume(&mut w3, 50);
         assert!((i32::from(amostra(&w3, 2)) * 2 - i32::from(esperado)).abs() <= 1);
+    }
+
+    #[test]
+    fn retornos_sao_wav_validos_e_distintos() {
+        use Retorno::*;
+        let todos = [
+            MicMudo,
+            MicAberto,
+            FoneDesligado,
+            FoneLigado,
+            EntrouNaChamada,
+            SaiuDaChamada,
+            TelaIniciada,
+            TelaParada,
+            OutroTransmite,
+            OutroFechouTransmissao,
+            AlguemAssiste,
+            AlguemParouDeAssistir,
+            OutroEntrou,
+            OutroSaiu,
+        ];
+        let wavs: Vec<_> = todos.iter().map(|r| sintetiza_retorno(*r)).collect();
+        for (i, w) in wavs.iter().enumerate() {
+            assert_eq!(&w[0..4], b"RIFF");
+            assert!(w[44..].iter().any(|&b| b != 0));
+            for outro in &wavs[i + 1..] {
+                assert_ne!(w, outro);
+            }
+        }
+    }
+
+    #[test]
+    fn retornos_da_mudanca_escolhe_o_som_certo() {
+        let base = EstadoPropio {
+            na_chamada: true,
+            mudo: false,
+            surdo: false,
+            apresentando: false,
+        };
+        let surdo = EstadoPropio {
+            surdo: true,
+            mudo: true,
+            ..base
+        };
+        assert_eq!(
+            retornos_da_mudanca(base, surdo),
+            vec![Retorno::FoneDesligado]
+        );
+        assert_eq!(retornos_da_mudanca(surdo, base), vec![Retorno::FoneLigado]);
+        let mudo = EstadoPropio { mudo: true, ..base };
+        assert_eq!(retornos_da_mudanca(base, mudo), vec![Retorno::MicMudo]);
+        let tela = EstadoPropio {
+            apresentando: true,
+            ..base
+        };
+        assert_eq!(retornos_da_mudanca(base, tela), vec![Retorno::TelaIniciada]);
+        let fora = EstadoPropio {
+            na_chamada: false,
+            ..base
+        };
+        assert_eq!(
+            retornos_da_mudanca(base, fora),
+            vec![Retorno::SaiuDaChamada]
+        );
+        assert!(retornos_da_mudanca(base, base).is_empty());
+    }
+
+    fn pessoa(id: &str, eu: bool, espectador: bool, apresentando: bool) -> crate::sala::Pessoa {
+        crate::sala::Pessoa {
+            id: id.into(),
+            uid: None,
+            nome: id.into(),
+            eu,
+            espectador,
+            mudo: false,
+            surdo: false,
+            apresentando,
+            com_camera: false,
+            conexao: None,
+            volume: 1.0,
+            volume_tela: 1.0,
+            volume_anterior: None,
+            volume_tela_anterior: None,
+            falando: false,
+            mudo_forcado: false,
+            dono: false,
+            qualidade: None,
+            avatar: None,
+            cor: None,
+            cor_nome: None,
+            efeito_nome: None,
+            bio: None,
+            status: None,
+            arroba: None,
+            atividade: None,
+        }
+    }
+
+    #[test]
+    fn retornos_de_pessoas_alheias() {
+        let eu = pessoa("eu", true, false, false);
+        let so_eu = vec![eu.clone()];
+        let com_a = vec![eu.clone(), pessoa("a", false, false, false)];
+        assert_eq!(
+            retorno_de_chegada(&so_eu, &com_a),
+            Some(Retorno::OutroEntrou)
+        );
+        assert_eq!(retorno_de_chegada(&com_a, &so_eu), Some(Retorno::OutroSaiu));
+        // Espectador (só olhando a conversa) não conta como chegada.
+        let espec = vec![eu.clone(), pessoa("a", false, true, false)];
+        assert_eq!(retorno_de_chegada(&so_eu, &espec), None);
+        // Passar de espectador para a chamada conta.
+        assert_eq!(
+            retorno_de_chegada(&espec, &com_a),
+            Some(Retorno::OutroEntrou)
+        );
+        let transmite = vec![eu.clone(), pessoa("a", false, false, true)];
+        assert_eq!(
+            retorno_de_transmissao_alheia(&com_a, &transmite),
+            Some(Retorno::OutroTransmite)
+        );
+        assert_eq!(
+            retorno_de_transmissao_alheia(&transmite, &com_a),
+            Some(Retorno::OutroFechouTransmissao)
+        );
+        // Minha própria transmissão não toca o som de "outro".
+        let eu_tela = vec![pessoa("eu", true, false, true)];
+        assert_eq!(retorno_de_transmissao_alheia(&so_eu, &eu_tela), None);
     }
 
     #[test]
