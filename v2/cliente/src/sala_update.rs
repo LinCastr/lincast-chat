@@ -71,6 +71,20 @@ impl SalaAberta {
             self.painel = None;
         }
         match msg {
+            // Colar sem texto na área de transferência (um print, por exemplo)
+            // não muda o campo: aí tenta colar como imagem.
+            Msg::ColaRascunho(v) => {
+                if v == self.rascunho {
+                    if let Some(res) = ui::chat::tenta_imagem_clipboard() {
+                        match res {
+                            Ok(pendente) => self.imagem_pendente = Some(pendente),
+                            Err(e) => self.aviso = Some(e),
+                        }
+                    }
+                    return Task::none();
+                }
+                return self.update(Msg::Rascunho(v));
+            }
             Msg::Rascunho(v) => {
                 // Mexeu no campo de mensagem: o Ctrl+C volta a ser dele.
                 self.limpa_selecoes(None);
@@ -593,13 +607,26 @@ impl SalaAberta {
                     self.manda(Comando::Assistindo(dono.clone(), false));
                 }
                 if self.video_em_tela_cheia.as_ref() == Some(&(dono, de_tela)) {
-                    self.video_em_tela_cheia = None;
+                    return self.sai_da_tela_cheia();
                 }
             }
             Msg::AlternaTelaCheiaVideo(tc) => {
                 self.ultimo_movimento = std::time::Instant::now();
                 // Quem apresenta não põe a própria tela em tela cheia.
-                self.video_em_tela_cheia = tc.filter(|(d, t)| !(*t && *d == self.meu_id));
+                let tc = tc.filter(|(d, t)| !(*t && *d == self.meu_id));
+                if tc.is_none() {
+                    return self.sai_da_tela_cheia();
+                }
+                self.video_em_tela_cheia = tc;
+            }
+            Msg::TelaCheiaExclusiva(dono, de_tela) => {
+                if de_tela && dono == self.meu_id {
+                    return Task::none();
+                }
+                self.ultimo_movimento = std::time::Instant::now();
+                self.video_em_tela_cheia = Some((dono, de_tela));
+                self.tela_cheia_exclusiva = true;
+                return modo_da_janela(iced::window::Mode::Fullscreen);
             }
             Msg::PedeCamera => {
                 let cameras = captura_camera::lista_cameras();
@@ -861,7 +888,7 @@ impl SalaAberta {
                         } else if self.resposta_pendente.is_some() {
                             self.resposta_pendente = None;
                         } else if self.video_em_tela_cheia.is_some() {
-                            self.video_em_tela_cheia = None;
+                            return self.sai_da_tela_cheia();
                         } else if let Some(w) = &mut self.wordle
                             && w.modo != ui::wordle::ModoWordle::Minimizado
                         {
@@ -1260,5 +1287,22 @@ impl SalaAberta {
             }
         }
         self.selecionaveis.retain(|k, _| vistos.contains(k));
+    }
+}
+
+/// Muda o modo da janela (tela cheia do sistema ou janela normal).
+fn modo_da_janela(modo: iced::window::Mode) -> Task<Msg> {
+    iced::window::latest().and_then(move |id| iced::window::set_mode(id, modo))
+}
+
+impl SalaAberta {
+    /// Sai da tela cheia do vídeo e, se era a exclusiva, devolve a janela.
+    pub(crate) fn sai_da_tela_cheia(&mut self) -> Task<Msg> {
+        self.video_em_tela_cheia = None;
+        if std::mem::take(&mut self.tela_cheia_exclusiva) {
+            modo_da_janela(iced::window::Mode::Windowed)
+        } else {
+            Task::none()
+        }
     }
 }

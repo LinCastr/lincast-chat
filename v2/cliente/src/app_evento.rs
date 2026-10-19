@@ -227,7 +227,7 @@ impl App {
                     s.video_fixado = None;
                 }
                 if s.video_em_tela_cheia.as_ref() == Some(&(dono, de_tela)) {
-                    s.video_em_tela_cheia = None;
+                    return s.sai_da_tela_cheia();
                 }
             }
             Evento::QuadroPrevia(q) => {

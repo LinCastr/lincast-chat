@@ -112,24 +112,23 @@ pub fn lista_dispositivos_avulso() -> (Vec<DispositivoAudio>, Vec<DispositivoAud
     res
 }
 
-/// Salva dispositivo de gravação e atualiza o nome correspondente.
-pub fn salva_dispositivo_gravacao(guid: &str) {
+/// Salva o dispositivo de gravação escolhido. O nome vem da lista que a
+/// tela já tem: enumerar de novo aqui abria um segundo ADM da plataforma.
+pub fn salva_dispositivo_gravacao(guid: &str, nome: Option<&str>) {
     let mut cfg = carrega_config();
     cfg.entrada_guid = Some(guid.to_string());
-    let (entradas, _) = lista_dispositivos_avulso();
-    if let Some(d) = entradas.iter().find(|d| d.guid == guid) {
-        cfg.entrada_nome = Some(d.nome.clone());
+    if let Some(n) = nome {
+        cfg.entrada_nome = Some(n.to_string());
     }
     salva_config(&cfg);
 }
 
-/// Salva dispositivo de reprodução e atualiza o nome correspondente.
-pub fn salva_dispositivo_reproducao(guid: &str) {
+/// Salva o dispositivo de reprodução escolhido (ver o de gravação).
+pub fn salva_dispositivo_reproducao(guid: &str, nome: Option<&str>) {
     let mut cfg = carrega_config();
     cfg.saida_guid = Some(guid.to_string());
-    let (_, saidas) = lista_dispositivos_avulso();
-    if let Some(d) = saidas.iter().find(|d| d.guid == guid) {
-        cfg.saida_nome = Some(d.nome.clone());
+    if let Some(n) = nome {
+        cfg.saida_nome = Some(n.to_string());
     }
     salva_config(&cfg);
 }

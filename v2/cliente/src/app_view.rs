@@ -128,13 +128,13 @@ impl App {
         // Atalhos globais (portal GlobalShortcuts): de pé com a sessão, em
         // qualquer tela — "atender" precisa funcionar fora de uma sala.
         if self.eu.is_some() {
-            let gatilhos: Vec<(String, String, String)> = atalhos::ACOES
+            let gatilhos: Vec<(String, String, Option<String>)> = atalhos::ACOES
                 .iter()
                 .map(|(id, rotulo, _)| {
                     (
                         (*id).to_string(),
                         format!("{rotulo} — Lincast Chat"),
-                        atalhos::para_portal(&self.atalhos.combo(id)),
+                        atalhos::gatilho_para_portal(&self.atalhos.combo(id)),
                     )
                 })
                 .collect();
@@ -769,6 +769,7 @@ impl App {
             com_camera: s.com_camera,
             apresentando: s.apresentando,
             som_aberto: s.painel == Some(PainelFlutuante::Sons),
+            falando: s.pessoas.iter().any(|p| p.id == s.meu_id && p.falando),
         });
         let mudo = sala_chamada.map(|s| s.mudo);
         let surdo = sala_chamada.map(|s| s.surdo);

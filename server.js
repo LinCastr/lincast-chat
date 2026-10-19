@@ -1157,6 +1157,7 @@ const server = http.createServer(async (req, res) => {
         delete conta.perfil.avatarId;
         delete conta.perfil.avatarMime;
         saveContas();
+        avisaAvatarMudou(conta);
       }
       responde(res, 200, { ok: true });
       return;
@@ -1183,6 +1184,7 @@ const server = http.createServer(async (req, res) => {
     conta.perfil.avatarMime = mime;
     saveContas();
     if (idAntigo) deleteImage(idAntigo); // depois de salvar o novo: se algo acima falhasse, a conta não fica sem avatar nenhum
+    avisaAvatarMudou(conta);
     responde(res, 200, { ok: true, avatar: avatarUrlDaConta(conta) });
     return;
   }
@@ -3319,6 +3321,23 @@ function emiteChamada(conversaId, forca) {
   avisaUids(c.membros, { type: 'chamada', conversa: conversaId, dentro, chamando, ativa: dentro.length > 0 });
 }
 
+// Foto de perfil trocada: quem está na chamada com a pessoa recebe `profile`
+// com o avatar novo (o `peer-joined` só leva o da hora da entrada) e as
+// conversas dela são reenviadas aos membros (lista de grupos, DMs, membros).
+function avisaAvatarMudou(conta) {
+  const uid = 'local:' + conta.id;
+  const avatar = avatarUrlDaConta(conta);
+  for (const room of rooms.values()) {
+    for (const [id, peer] of room) {
+      if (peer.uid !== uid) continue;
+      peer.avatar = avatar;
+      const payload = JSON.stringify({ type: 'profile', from: id, avatar, color: peer.color, nameColor: peer.nameColor, nameEffect: peer.nameEffect });
+      for (const [outro, p] of room) if (outro !== id) safeSend(p.ws, payload);
+    }
+  }
+  for (const c of conversasDe(uid)) avisaMembros(c, 'conversa-mudou');
+}
+
 // Status e atividade dos AMIGOS também passam por aqui — é o que mantém a
 // coluna "Ativo agora" e a bolinha de status sem ficar fazendo polling.
 function avisaAmigos(uid, evento) {
@@ -4038,6 +4057,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'join') {
+      // Avatar da hora do join, não da conexão (a foto pode ter mudado depois).
+      if (session && session.tipo === 'local' && contas.get(session.usuario)) {
+        myAvatar = avatarUrlDaConta(contas.get(session.usuario));
+      }
       // `msg.name`/`msg.avatar` são ignorados de propósito — ver o comentário
       // sobre identidade lá em cima. A partir da v3 não existe sala por nome:
       // entra-se numa CONVERSA, e o id dela é o nome da sala interna. Quem

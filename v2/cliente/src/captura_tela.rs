@@ -167,6 +167,18 @@ impl PerfilTela {
         }
     }
 
+    /// Fator de redução com `extra` degraus a menos (cada um divide a altura
+    /// por 1,5: 1080p → 720p → 480p), para segurar o fps.
+    pub fn fator_de_reducao_com(&self, extra: u8) -> f64 {
+        let base = self.fator_de_reducao();
+        if extra == 0 {
+            return base;
+        }
+        let alvo = f64::from(self.altura_efetiva()) / 1.5f64.powi(i32::from(extra));
+        let alvo = alvo.max(360.0);
+        base * (f64::from(self.altura_efetiva()) / alvo).max(1.0)
+    }
+
     /// Teto de bitrate: ~0,04 bit por pixel por quadro (que é o que os perfis
     /// antigos davam: 1080p30 → 2,5 Mbps), entre 0,6 e 8 Mbps.
     pub fn teto_bitrate(&self) -> u64 {
@@ -513,6 +525,20 @@ mod tests {
     #[test]
     fn rotulo_do_perfil() {
         assert_eq!(PerfilTela::PADRAO.rotulo(), "1080p · 30 fps");
+        // Degraus para segurar o fps: 1080p → 720p → 480p, nunca abaixo de 360p.
+        let p = PerfilTela {
+            resolucao: ResolucaoTela::P1080,
+            fps: 60,
+            fonte_altura: 1080,
+        };
+        assert_eq!(p.fator_de_reducao_com(0), 1.0);
+        assert!((p.fator_de_reducao_com(1) - 1.5).abs() < 1e-9);
+        assert!((p.fator_de_reducao_com(2) - 2.25).abs() < 1e-9);
+        let p = PerfilTela {
+            fonte_altura: 1440,
+            ..p
+        };
+        assert!((p.fator_de_reducao_com(1) - 2.0).abs() < 1e-9);
     }
 }
 

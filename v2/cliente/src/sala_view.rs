@@ -137,6 +137,10 @@ impl SalaAberta {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(tema::painel_principal);
+        // Tela cheia exclusiva: só o vídeo, sem coluna nem barras.
+        if self.tela_cheia_exclusiva && self.video_em_tela_cheia.is_some() {
+            return principal.into();
+        }
         let corpo: Element<'_, Msg> = match (self.painel_direito_aberto, info) {
             (true, Some(i)) => row![
                 principal,
@@ -649,7 +653,10 @@ impl SalaAberta {
             .style(tema::campo);
 
         if !wordle_ativo {
-            campo = campo.on_input(Msg::Rascunho).on_submit(Msg::EnviaChat);
+            campo = campo
+                .on_input(Msg::Rascunho)
+                .on_paste(Msg::ColaRascunho)
+                .on_submit(Msg::EnviaChat);
         }
 
         let dx = anim::balanco("botao-gif") * 16.0;

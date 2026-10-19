@@ -21,6 +21,8 @@ pub struct ChamadaLocal<'a> {
     pub com_camera: bool,
     pub apresentando: bool,
     pub som_aberto: bool,
+    /// Eu falando agora: anel verde no avatar do rodapé.
+    pub falando: bool,
 }
 
 pub struct ContextoColuna<'a> {
@@ -381,17 +383,31 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
             }
         })
         .unwrap_or_else(|| ui::status::rotulo_status(ctx.status).to_string());
+    let anel = if ctx.chamada.as_ref().is_some_and(|c| c.falando) {
+        cores.sucesso_forte
+    } else {
+        iced::Color::TRANSPARENT
+    };
     let id = row![
         // Mesma chave (uid) de todo o resto, senão a cor de fundo do avatar
         // sem foto saía diferente aqui e no chat.
-        ui::avatar::avatar(
+        container(ui::avatar::avatar(
             ctx.eu.and_then(|e| e.avatar.as_deref()),
             ctx.avisos.meu_uid().or(usuario).unwrap_or(nome),
             nome,
             32.0,
             Some(ctx.status),
             cores.palco,
-        ),
+        ))
+        .padding(2)
+        .style(move |_| container::Style {
+            border: Border {
+                color: anel,
+                width: 2.0,
+                radius: 20.0.into(),
+            },
+            ..Default::default()
+        }),
         column![
             text(nome).size(14).font(negrito()),
             text(subtitulo)

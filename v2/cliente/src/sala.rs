@@ -531,6 +531,7 @@ pub fn configura_remetente_tela(
     sender: &RtpSender,
     perfil: captura_tela::PerfilTela,
     degrau: usize,
+    reducao_fps: u8,
 ) {
     let mut params = sender.parameters();
     params.set_degradation_preference(libwebrtc::rtp_parameters::DegradationPreference::Balanced);
@@ -545,7 +546,7 @@ pub fn configura_remetente_tela(
             .encodings
             .push(libwebrtc::rtp_parameters::RtpEncodingParameters::default());
     }
-    let reducao = perfil.fator_de_reducao();
+    let reducao = perfil.fator_de_reducao_com(reducao_fps);
     for enc in &mut params.encodings {
         enc.max_bitrate = Some(bitrate);
         enc.max_framerate = Some(fps);
@@ -583,12 +584,20 @@ struct Par {
     educado: bool,
     renegociar: bool,
     pendentes: Vec<IceCandidate>,
+    /// Remetente do microfone. Guardado porque `RtpSender::track()` derruba o
+    /// app (SIGSEGV no libwebrtc) em remetente sem trilha, e todo transceptor
+    /// criado pela oferta do outro lado (a tela dele, por exemplo) é um.
+    remetente_mic: Option<RtpSender>,
     remetentes_tela: Vec<RtpSender>,
     remetentes_camera: Vec<RtpSender>,
     trilhas_voz: Vec<RtcAudioTrack>,
     trilhas_tela: Vec<RtcAudioTrack>,
     monitores_audio: Vec<tokio::task::JoinHandle<()>>,
     escada_bitrate: EscadaBitrate,
+    /// Degraus de resolução tirados para segurar o fps (0 = a do perfil).
+    reducao_fps: u8,
+    amostras_fps_baixo: u8,
+    amostras_fps_bom: u8,
     ultimo_envio: Option<AmostraEnvio>,
     ultimo_inbound: Option<AmostraInbound>,
 }
@@ -651,6 +660,8 @@ struct Ator {
     teste_mic: Option<(tokio::task::JoinHandle<()>, Option<RtcAudioTrack>)>,
     monitor_mic_local: Option<tokio::task::JoinHandle<()>>,
     meu_falando: bool,
+    /// Quadros que a captura de tela entregou na amostra anterior (e quando).
+    quadros_tela_antes: Option<(u64, std::time::Instant)>,
     falando_no_mudo: bool,
     inicio_fala_mudo: Option<tokio::time::Instant>,
     ultimo_som_mudo: Option<tokio::time::Instant>,
@@ -823,6 +834,7 @@ async fn roda_interno(
         teste_mic: None,
         monitor_mic_local: None,
         meu_falando: false,
+        quadros_tela_antes: None,
         falando_no_mudo: false,
         inicio_fala_mudo: None,
         ultimo_som_mudo: None,
@@ -1778,9 +1790,7 @@ impl Ator {
     /// Troca o microfone da chamada (outro dispositivo ou supressão de
     /// ruído ligada/desligada) sem renegociar: só o remetente do microfone.
     async fn troca_mic(&mut self) {
-        if self.na_chamada
-            && let Some(antigo) = self.mic.as_ref().map(|m| m.id())
-        {
+        if self.na_chamada && self.mic.is_some() {
             let novo_mic = self.cria_mic().await;
             let mut ligado = !(self.mudo || self.surdo);
             if self.ptt_ativo && ligado {
@@ -1788,20 +1798,11 @@ impl Ator {
             }
             novo_mic.set_enabled(ligado);
             self.mic = Some(novo_mic.clone());
+            // Só o remetente do microfone: o som da transmissão também é
+            // áudio e não pode virar microfone.
             for p in self.pares.values() {
-                for sender in p.pc.senders() {
-                    // Só o remetente do microfone: o som da transmissão
-                    // também é áudio e não pode virar microfone.
-                    if let Some(libwebrtc::media_stream_track::MediaStreamTrack::Audio(t)) =
-                        sender.track()
-                        && t.id() == antigo
-                    {
-                        let _ = sender.set_track(Some(
-                            libwebrtc::media_stream_track::MediaStreamTrack::Audio(
-                                novo_mic.clone(),
-                            ),
-                        ));
-                    }
+                if let Some(sender) = &p.remetente_mic {
+                    let _ = sender.set_track(Some(MediaStreamTrack::Audio(novo_mic.clone())));
                 }
             }
             self.inicia_monitor_mic_local();
@@ -2208,7 +2209,7 @@ impl Ator {
                 .pc
                 .add_track(MediaStreamTrack::Video(video.clone()), &ids)
             {
-                configura_remetente_tela(&s, perfil, 0);
+                configura_remetente_tela(&s, perfil, 0, 0);
                 par.remetentes_tela.push(s);
             }
             if let Some(a) = &audio
@@ -2275,6 +2276,22 @@ impl Ator {
         };
 
         let mut eventos_qualidade = Vec::new();
+        // Quadros por segundo que a captura entregou desde a amostra anterior:
+        // com a tela parada o Wayland quase não manda quadros, e aí fps baixo
+        // no envio não é problema do codificador.
+        let fps_capturado = self.tela.as_ref().and_then(|t| {
+            let agora = std::time::Instant::now();
+            let total = *t.captura.quadros.lock().unwrap();
+            let antes = self.quadros_tela_antes.replace((total, agora));
+            antes.map(|(n, quando)| {
+                total.saturating_sub(n) as f64 / agora.duration_since(quando).as_secs_f64().max(0.5)
+            })
+        });
+        if self.tela.is_none() {
+            self.quadros_tela_antes = None;
+        }
+        static AMOSTRA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let loga_stats = AMOSTRA.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10 == 2;
 
         for (id, par) in &mut self.pares {
             let estado_pc = par.pc.connection_state();
@@ -2298,6 +2315,40 @@ impl Ator {
             let Ok(stats) = par.pc.get_stats().await else {
                 continue;
             };
+            // Diagnóstico (vai no relatório): a cada ~30 s, o que chega e sai
+            // de cada par — som da tela mudo, fps baixo da transmissão.
+            if loga_stats {
+                let mut partes = Vec::new();
+                for s in &stats {
+                    match s {
+                        libwebrtc::stats::RtcStats::InboundRtp(i) => partes.push(format!(
+                            "in {} mid={} pkts={} nivel={:.3} {}x{}@{:.0}",
+                            i.stream.kind,
+                            i.inbound.mid,
+                            i.received.packets_received,
+                            i.inbound.audio_level,
+                            i.inbound.frame_width,
+                            i.inbound.frame_height,
+                            i.inbound.frames_per_second
+                        )),
+                        libwebrtc::stats::RtcStats::OutboundRtp(o) if o.stream.kind == "video" => {
+                            partes.push(format!(
+                                "out video {}x{}@{:.0} limite={:?}",
+                                o.outbound.frame_width,
+                                o.outbound.frame_height,
+                                o.outbound.frames_per_second,
+                                o.outbound.quality_limitation_reason
+                            ))
+                        }
+                        _ => {}
+                    }
+                }
+                let tela: Vec<bool> = par.trilhas_tela.iter().map(|t| t.enabled()).collect();
+                log::info!(
+                    "[stats] [{id}] {} | trilhas_tela ligadas={tela:?}",
+                    partes.join(" | ")
+                );
+            }
 
             let mut perdidos_inbound = 0u64;
             let mut recebidos_inbound = 0u64;
@@ -2312,6 +2363,7 @@ impl Ator {
             let mut enviados = 0u64;
             let mut perdidos_no_envio = 0u64;
             let mut rtt_envio_ms: Option<u64> = None;
+            let mut fps_envio_tela: Option<f64> = None;
 
             for s in &stats {
                 match s {
@@ -2326,6 +2378,9 @@ impl Ator {
                     }
                     libwebrtc::stats::RtcStats::OutboundRtp(out) => {
                         enviados = enviados.saturating_add(out.sent.packets_sent);
+                        if out.stream.kind == "video" && par.remetentes_camera.is_empty() {
+                            fps_envio_tela = Some(out.outbound.frames_per_second);
+                        }
                     }
                     libwebrtc::stats::RtcStats::RemoteInboundRtp(rem) => {
                         perdidos_no_envio = perdidos_no_envio
@@ -2438,7 +2493,53 @@ impl Ator {
                         "[{id}] escada de bitrate de tela ajustada para degrau {novo_degrau} ({nivel_envio}, perda={perda_envio:?}, rtt={rtt_ms:?})"
                     );
                     for sender in &par.remetentes_tela {
-                        configura_remetente_tela(sender, perfil, novo_degrau);
+                        configura_remetente_tela(sender, perfil, novo_degrau, par.reducao_fps);
+                    }
+                }
+
+                // Segura o fps: imagem pesada (jogo) em resolução alta não cabe
+                // na banda e o VP8 descarta quadros (1080p60 caía para 3–5 fps
+                // em `fps_da_transmissao`; 720p60 ficava em 40–46). Com o fps
+                // enviado bem abaixo do capturado, desce um degrau de resolução;
+                // com ele bom por um minuto, tenta subir de novo.
+                if let (Some(enviado), Some(capturado)) = (fps_envio_tela, fps_capturado) {
+                    let alvo = f64::from(perfil.fps()).min(capturado);
+                    let mudou = if capturado >= 20.0 && enviado < alvo * 0.6 {
+                        par.amostras_fps_bom = 0;
+                        par.amostras_fps_baixo += 1;
+                        if par.amostras_fps_baixo >= 2 && par.reducao_fps < 2 {
+                            par.amostras_fps_baixo = 0;
+                            par.reducao_fps += 1;
+                            true
+                        } else {
+                            false
+                        }
+                    } else if enviado >= alvo * 0.85 {
+                        par.amostras_fps_baixo = 0;
+                        par.amostras_fps_bom += 1;
+                        if par.amostras_fps_bom >= 20 && par.reducao_fps > 0 {
+                            par.amostras_fps_bom = 0;
+                            par.reducao_fps -= 1;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if mudou {
+                        log::info!(
+                            "[{id}] tela: enviando {enviado:.0} fps de {capturado:.0} capturados; redução de resolução agora {}",
+                            par.reducao_fps
+                        );
+                        for sender in &par.remetentes_tela {
+                            configura_remetente_tela(
+                                sender,
+                                perfil,
+                                par.escada_bitrate.degrau,
+                                par.reducao_fps,
+                            );
+                        }
                     }
                 }
             }
@@ -2939,6 +3040,10 @@ impl Ator {
                     p.cor = msg["color"].as_str().map(String::from);
                     p.cor_nome = msg["nameColor"].as_str().map(String::from);
                     p.efeito_nome = msg["nameEffect"].as_str().map(String::from);
+                    // Foto trocada no meio da chamada (só vem quando mudou).
+                    if let Some(a) = msg["avatar"].as_str() {
+                        p.avatar = Some(a.to_string());
+                    }
                 }
                 self.publica_pessoas().await;
             }
@@ -3068,9 +3173,12 @@ impl Ator {
         })));
         let mut remetentes_tela = Vec::new();
         let mut remetentes_camera = Vec::new();
+        let mut remetente_mic = None;
         if let Some(m) = &self.mic {
-            pc.add_track(MediaStreamTrack::Audio(m.clone()), &[self.id_voz.as_str()])
-                .map_err(|e| anyhow!("add_track mic: {e:?}"))?;
+            remetente_mic = Some(
+                pc.add_track(MediaStreamTrack::Audio(m.clone()), &[self.id_voz.as_str()])
+                    .map_err(|e| anyhow!("add_track mic: {e:?}"))?,
+            );
         }
         if let Some(c) = &self.camera {
             let ids = [self.id_camera.as_str()];
@@ -3081,7 +3189,7 @@ impl Ator {
         if let Some(t) = &self.tela {
             let ids = [self.id_tela.as_str()];
             if let Ok(s) = pc.add_track(MediaStreamTrack::Video(t.video.clone()), &ids) {
-                configura_remetente_tela(&s, t.perfil, 0);
+                configura_remetente_tela(&s, t.perfil, 0, 0);
                 remetentes_tela.push(s);
             }
             if let Some(a) = &t.audio
@@ -3102,12 +3210,16 @@ impl Ator {
                 educado: !iniciador,
                 renegociar: precisa_renegociar,
                 pendentes: Vec::new(),
+                remetente_mic,
                 remetentes_tela,
                 remetentes_camera,
                 trilhas_voz: Vec::new(),
                 trilhas_tela: Vec::new(),
                 monitores_audio: Vec::new(),
                 escada_bitrate: EscadaBitrate::default(),
+                reducao_fps: 0,
+                amostras_fps_baixo: 0,
+                amostras_fps_bom: 0,
                 ultimo_envio: None,
                 ultimo_inbound: None,
             },
@@ -3920,5 +4032,280 @@ mod tests {
         assert_eq!(classifica_conexao(Some(0.01), Some(200)), "media");
         assert_eq!(classifica_conexao(Some(0.09), Some(50)), "ruim");
         assert_eq!(classifica_conexao(Some(0.01), Some(400)), "ruim");
+    }
+
+    /// Troca de microfone no meio da chamada, com o mesmo caminho do app:
+    /// a interface salvava a escolha enumerando com uma fábrica avulsa (outro
+    /// ADM da plataforma) e o ator para/troca/religa a gravação e troca a
+    /// trilha do remetente. `SEM_AVULSO=1` pula a fábrica avulsa; `ANTIGO=1`
+    /// procura o remetente por `sender.track()` (o crash: SIGSEGV 3 de 3).
+    /// `cargo test -p lincast-chat troca_mic_na_chamada -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn troca_mic_na_chamada() {
+        let fabrica = PeerConnectionFactory::default();
+        assert!(fabrica.acquire_platform_adm(), "sem ADM da plataforma");
+        fabrica.set_adm_recording_enabled(true);
+        fabrica.set_adm_playout_enabled(true);
+        let a = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc a");
+        let b = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc b");
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+        a.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_a.send(c);
+        })));
+        b.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_b.send(c);
+        })));
+        let (tx_estado, mut rx_estado) = tokio::sync::mpsc::unbounded_channel();
+        a.on_connection_state_change(Some(Box::new(move |e| {
+            let _ = tx_estado.send(e);
+        })));
+        let (a2, b2) = (a.clone(), b.clone());
+        tokio::spawn(async move {
+            while let Some(c) = rx_a.recv().await {
+                let _ = b2.add_ice_candidate(c).await;
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(c) = rx_b.recv().await {
+                let _ = a2.add_ice_candidate(c).await;
+            }
+        });
+        let mic_a = fabrica.create_device_audio_track("mic-a");
+        let mic_b = fabrica.create_device_audio_track("mic-b");
+        let remetente_a = a
+            .add_track(
+                MediaStreamTrack::Audio(mic_a.clone()),
+                &["voz-a".to_string()],
+            )
+            .expect("mic a");
+        b.add_track(MediaStreamTrack::Audio(mic_b), &["voz-b".to_string()])
+            .expect("mic b");
+        // Como quando o outro lado transmite: transceptor sem trilha local.
+        b.add_track(
+            video_de_tela_teste(&fabrica, "video-b"),
+            &["tela-b".to_string()],
+        )
+        .expect("video b");
+        negocia_teste(&a, &b).await;
+        negocia_teste(&b, &a).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(e) = rx_estado.recv().await {
+                if e == PeerConnectionState::Connected {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("as duas pontas não conectaram");
+        let (entradas, _) = crate::dispositivos::lista_dispositivos(&fabrica);
+        println!("conectado; {} entradas", entradas.len());
+        let sem_avulso = std::env::var_os("SEM_AVULSO").is_some();
+        let antigo_caminho = std::env::var_os("ANTIGO").is_some();
+        let mut antigo = mic_a.id();
+        for volta in 0..3 {
+            for d in &entradas {
+                println!("volta {volta}: {:?}", d.nome);
+                if !sem_avulso {
+                    // O que `Msg::SelecionaEntradaAudio` fazia na interface.
+                    let _ = crate::dispositivos::lista_dispositivos_avulso();
+                }
+                let ok = crate::dispositivos::aplica_dispositivo_gravacao(&fabrica, &d.guid);
+                let novo = fabrica.create_device_audio_track(&format!("mic-{volta}-{}", d.indice));
+                if antigo_caminho {
+                    // O de antes: procurava o remetente pela trilha.
+                    for sender in a.senders() {
+                        if let Some(MediaStreamTrack::Audio(t)) = sender.track()
+                            && t.id() == antigo
+                        {
+                            let _ = sender.set_track(Some(MediaStreamTrack::Audio(novo.clone())));
+                        }
+                    }
+                } else {
+                    let _ = remetente_a.set_track(Some(MediaStreamTrack::Audio(novo.clone())));
+                }
+                antigo = novo.id();
+                println!("   aplicado={ok}");
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
+        }
+        println!("sobreviveu às trocas");
+        a.close();
+        b.close();
+        fabrica.release_platform_adm();
+    }
+
+    /// Fps que o codificador entrega numa transmissão 1080p60 (par local, sem
+    /// rede de verdade). `DEGRADA=resolucao|fps|equilibrado` troca a preferência.
+    /// `cargo test --release -p lincast-chat fps_da_transmissao -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn fps_da_transmissao() {
+        use libwebrtc::prelude::{I420Buffer, VideoFrame, VideoRotation};
+        let fabrica = PeerConnectionFactory::default();
+        let a = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc a");
+        let b = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc b");
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+        a.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_a.send(c);
+        })));
+        b.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_b.send(c);
+        })));
+        let (a2, b2) = (a.clone(), b.clone());
+        tokio::spawn(async move {
+            while let Some(c) = rx_a.recv().await {
+                let _ = b2.add_ice_candidate(c).await;
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(c) = rx_b.recv().await {
+                let _ = a2.add_ice_candidate(c).await;
+            }
+        });
+        let (w, h) = (1920u32, 1080u32);
+        let fonte = libwebrtc::video_source::native::NativeVideoSource::new(
+            libwebrtc::video_source::VideoResolution {
+                width: w,
+                height: h,
+            },
+            std::env::var_os("SCREENCAST0").is_none(),
+        );
+        let trilha = fabrica.create_video_track("tela", fonte.clone());
+        let remetente = a
+            .add_track(MediaStreamTrack::Video(trilha), &["tela".to_string()])
+            .expect("tela");
+        let perfil = captura_tela::PerfilTela {
+            resolucao: captura_tela::ResolucaoTela::P1080,
+            fps: 60,
+            fonte_altura: h,
+        };
+        if std::env::var_os("ANTES").is_some() {
+            configura_remetente_tela(&remetente, perfil, 0, 0);
+        }
+        negocia_teste(&a, &b).await;
+        configura_remetente_tela(&remetente, perfil, 0, 0);
+        if let Ok(d) = std::env::var("DEGRADA") {
+            let mut params = remetente.parameters();
+            params.set_degradation_preference(match d.as_str() {
+                "resolucao" => libwebrtc::rtp_parameters::DegradationPreference::MaintainResolution,
+                "fps" => libwebrtc::rtp_parameters::DegradationPreference::MaintainFramerate,
+                _ => libwebrtc::rtp_parameters::DegradationPreference::Balanced,
+            });
+            remetente.set_parameters(params).expect("params");
+        }
+        if let Ok(f) = std::env::var("REDUZ") {
+            let mut params = remetente.parameters();
+            for enc in &mut params.encodings {
+                enc.scale_resolution_down_by = f.parse().ok();
+            }
+            remetente.set_parameters(params).expect("params");
+        }
+        if let Ok(kbps) = std::env::var("BITRATE") {
+            let mut params = remetente.parameters();
+            for enc in &mut params.encodings {
+                enc.max_bitrate = kbps.parse::<u64>().ok().map(|k| k * 1000);
+            }
+            remetente.set_parameters(params).expect("params");
+        }
+        for e in &remetente.parameters().encodings {
+            println!(
+                "encoding: max_bitrate={:?} max_fps={:?} reduz={:?} ativo={}",
+                e.max_bitrate, e.max_framerate, e.scale_resolution_down_by, e.active
+            );
+        }
+        // 60 quadros por segundo com conteúdo mudando (como um jogo).
+        let parar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let p2 = parar.clone();
+        let pesado = std::env::var_os("PESADO").is_some();
+        let gerador = std::thread::spawn(move || {
+            let mut q = VideoFrame {
+                rotation: VideoRotation::VideoRotation0,
+                timestamp_us: 0,
+                frame_metadata: None,
+                buffer: I420Buffer::new(w, h),
+            };
+            let inicio = std::time::Instant::now();
+            let mut n = 0u64;
+            while !p2.load(std::sync::atomic::Ordering::Relaxed) {
+                let (y, _, _) = q.buffer.data_mut();
+                // Faixas diagonais andando 8 px por quadro: muda a tela toda,
+                // mas comprime como imagem de verdade (ruído puro não).
+                // `PESADO=1`: metade da tela com textura fina mudando (folhagem,
+                // partículas de jogo), que estoura o bitrate.
+                for (i, px) in y.iter_mut().enumerate() {
+                    let (x, l) = (i as u64 % 1920, i as u64 / 1920);
+                    *px = if pesado && l < 540 {
+                        ((x * 31 + l * 17 + n * 13) % 256) as u8 ^ ((x ^ l) as u8)
+                    } else {
+                        ((x + l + n * 8) / 4 % 256) as u8
+                    };
+                }
+                q.timestamp_us = inicio.elapsed().as_micros() as i64;
+                fonte.capture_frame(&q);
+                n += 1;
+                let alvo = inicio + Duration::from_micros(n * 16_667);
+                if let Some(e) = alvo.checked_duration_since(std::time::Instant::now()) {
+                    std::thread::sleep(e);
+                }
+            }
+            n as f64 / inicio.elapsed().as_secs_f64()
+        });
+        let segundos: u64 = std::env::var("SEGUNDOS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(12);
+        for seg in 1..=segundos {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if seg % 6 != 0 {
+                continue;
+            }
+            for st in a.get_stats().await.unwrap_or_default() {
+                if let libwebrtc::stats::RtcStats::OutboundRtp(o) = st
+                    && o.stream.kind == "video"
+                {
+                    println!(
+                        "{seg}s envio {}x{} @ {:.0} fps, limite {:?}, {:.0} kbps alvo, {:.0} ms/quadro {}",
+                        o.outbound.frame_width,
+                        o.outbound.frame_height,
+                        o.outbound.frames_per_second,
+                        o.outbound.quality_limitation_reason,
+                        o.outbound.target_bitrate / 1000.0,
+                        o.outbound.total_encode_time * 1000.0
+                            / o.outbound.frames_encoded.max(1) as f64,
+                        o.outbound.encoder_implementation
+                    );
+                }
+            }
+            for st in b.get_stats().await.unwrap_or_default() {
+                if let libwebrtc::stats::RtcStats::Codec(c) = &st
+                    && seg == 3
+                {
+                    println!("codec {}", c.codec.mime_type);
+                }
+                if let libwebrtc::stats::RtcStats::InboundRtp(i) = st
+                    && i.stream.kind == "video"
+                {
+                    println!(
+                        "{seg}s recebe {}x{} @ {:.0} fps",
+                        i.inbound.frame_width, i.inbound.frame_height, i.inbound.frames_per_second
+                    );
+                }
+            }
+        }
+        parar.store(true, std::sync::atomic::Ordering::Relaxed);
+        println!("gerador: {:.1} fps", gerador.join().unwrap());
+        a.close();
+        b.close();
     }
 }

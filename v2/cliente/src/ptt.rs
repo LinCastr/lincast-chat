@@ -158,7 +158,7 @@ pub fn corresponde(id_config: &str, key: &iced::keyboard::Key) -> bool {
 /// Emite `true` quando ativado (pressionado) e `false` quando desativado (solto).
 pub async fn inicia_portal_global(
     tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>,
-    gatilhos: Vec<(String, String, String)>,
+    gatilhos: Vec<(String, String, Option<String>)>,
 ) -> Result<(), String> {
     use ashpd::desktop::CreateSessionOptions;
     use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
@@ -177,8 +177,7 @@ pub async fn inicia_portal_global(
     let shortcuts: Vec<NewShortcut> = gatilhos
         .iter()
         .map(|(id, descricao, gatilho)| {
-            NewShortcut::new(id.as_str(), descricao.as_str())
-                .preferred_trigger(Some(gatilho.as_str()))
+            NewShortcut::new(id.as_str(), descricao.as_str()).preferred_trigger(gatilho.as_deref())
         })
         .collect();
 

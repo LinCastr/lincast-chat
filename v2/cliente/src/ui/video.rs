@@ -173,7 +173,7 @@ pub(crate) fn renderiza_caixa_video<'a>(
         let img = mouse_area(quadro_de_video(v, Length::Fill, Length::Fill))
             .on_press(Msg::AlternaFixacaoVideo(v.dono.clone(), v.de_tela));
         let pode_tela_cheia = !(v.de_tela && v.dono == meu_id);
-        let tela_cheia = container(crate::ui::efeitos::com_dica(
+        let botao_tela_cheia = crate::ui::efeitos::com_dica(
             crate::botao_icone(
                 icones::maximizar(),
                 false,
@@ -185,10 +185,21 @@ pub(crate) fn renderiza_caixa_video<'a>(
             ),
             "Tela cheia",
             iced::widget::tooltip::Position::Top,
-        ))
-        .width(Length::Fill)
-        .align_x(Alignment::End)
-        .padding(8);
+        );
+        let botao_exclusiva = crate::ui::efeitos::com_dica(
+            crate::botao_icone(
+                icones::expandir(),
+                false,
+                false,
+                Some(Msg::TelaCheiaExclusiva(v.dono.clone(), v.de_tela)),
+            ),
+            "Tela cheia exclusiva",
+            iced::widget::tooltip::Position::Top,
+        );
+        let tela_cheia = container(row![botao_exclusiva, botao_tela_cheia].spacing(4))
+            .width(Length::Fill)
+            .align_x(Alignment::End)
+            .padding(8);
         if pode_tela_cheia {
             stack![img, tela_cheia].into()
         } else {

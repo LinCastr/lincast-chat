@@ -274,6 +274,8 @@ pub(crate) struct SalaAberta {
     pub(crate) cursor_pos: iced::Point,
     pub(crate) painel_ancora: iced::Point,
     pub(crate) video_em_tela_cheia: Option<(String, bool)>,
+    /// A tela cheia atual também pôs a janela em tela cheia do sistema.
+    pub(crate) tela_cheia_exclusiva: bool,
     /// Transmissões que a pessoa clicou para assistir.
     pub(crate) assistindo: std::collections::HashSet<(String, bool)>,
     /// Quem está assistindo a minha transmissão (nomes), pelo aviso do servidor.
@@ -373,6 +375,8 @@ pub(crate) enum Msg {
     // sala
     SalaDe(String, Evento),
     Rascunho(String),
+    /// Ctrl+V no campo do chat (o campo captura o evento: o app não o vê).
+    ColaRascunho(String),
     EnviaChat,
     IniciaEdicaoChat(String),
     CancelaEdicaoChat,
@@ -464,6 +468,8 @@ pub(crate) enum Msg {
     PausaTransmissao(String, bool),
     AbreMenuTransmissao(String, bool),
     AlternaTelaCheiaVideo(Option<(String, bool)>),
+    /// Tela cheia de verdade (a janela inteira, sem coluna nem barras).
+    TelaCheiaExclusiva(String, bool),
     FechaAviso,
     DispensaAvisoEco,
     AlternaPainelGif,

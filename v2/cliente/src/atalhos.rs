@@ -272,6 +272,18 @@ pub fn para_hyprland(combo: &str) -> String {
     format!("{mods}, {tecla}")
 }
 
+/// Gatilho sugerido ao portal GlobalShortcuts. Tecla de digitar sem
+/// modificador (o "V" padrão do push-to-talk, Espaço, Enter) não é sugerida:
+/// o KDE/GNOME pegam a tecla no sistema inteiro e ela para de funcionar em
+/// todos os programas. Sem sugestão o atalho fica registrado sem tecla (dá
+/// para ligar nas configurações do sistema) e dentro do app segue valendo.
+pub fn gatilho_para_portal(combo: &str) -> Option<String> {
+    let de_digitar = !combo.contains(" + ")
+        && (combo.chars().count() == 1
+            || matches!(combo, "Espaço" | "Space" | "Enter" | "Tab" | "Backspace"));
+    (!de_digitar && !combo.is_empty()).then(|| para_portal(combo))
+}
+
 /// A linha pronta para colar no `hyprland.conf`.
 ///
 /// O push-to-talk usa `bindn` (não consome a tecla): com `bind`, o Hyprland
@@ -321,6 +333,13 @@ mod testes {
         assert_eq!(para_portal("NumLock"), "Num_Lock");
         assert_eq!(para_hyprland("Ctrl + Shift + M"), "CTRL SHIFT, M");
         assert_eq!(para_hyprland("V"), ", V");
+        assert_eq!(gatilho_para_portal("V"), None);
+        assert_eq!(gatilho_para_portal("Espaço"), None);
+        assert_eq!(gatilho_para_portal("F8").as_deref(), Some("F8"));
+        assert_eq!(
+            gatilho_para_portal("Ctrl + Shift + M").as_deref(),
+            Some("CTRL+SHIFT+m")
+        );
         assert_eq!(para_hyprland("NumLock"), ", Num_Lock");
         assert_eq!(
             linha_hyprland("mute", "Ctrl + Shift + M"),

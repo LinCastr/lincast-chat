@@ -57,6 +57,7 @@ icones! {
     usuario_mais => "user-plus",
     seta_baixo => "chevron-down",
     maximizar => "maximize",
+    expandir => "expand",
     minimizar => "minimize",
     reticencias => "ellipsis",
     mensagem => "message-square",

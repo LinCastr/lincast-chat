@@ -230,6 +230,7 @@ impl App {
                     cursor_pos: iced::Point::ORIGIN,
                     painel_ancora: iced::Point::ORIGIN,
                     video_em_tela_cheia: None,
+                    tela_cheia_exclusiva: false,
                     assistindo: std::collections::HashSet::new(),
                     espectadores_da_tela: std::collections::HashSet::new(),
                     ultimo_movimento: std::time::Instant::now(),
@@ -1258,9 +1259,9 @@ impl App {
             }
             Msg::FechaErroGlobal => self.erro_global = None,
             Msg::AlternaMenuStatus => self.menu_status_aberto = !self.menu_status_aberto,
-            Msg::TickChamada => {
-                self.menu_contexto = None;
-            }
+            // Só redesenha (cronômetro, toque, controles da tela cheia). Antes
+            // fechava o menu de contexto, que sumia sozinho durante a chamada.
+            Msg::TickChamada => {}
             Msg::AbreEditarGrupo(id) => {
                 self.menu_contexto = None;
                 if let Some(c) = self
@@ -2442,7 +2443,16 @@ impl App {
                     p.sub = None;
                 }
                 self.painel_audio.entrada_selecionada = Some(guid.clone());
-                dispositivos::salva_dispositivo_gravacao(&guid);
+                // Na chamada quem salva é o ator (com o ADM dele).
+                if !self.em_chamada() {
+                    let nome = self
+                        .painel_audio
+                        .entradas
+                        .iter()
+                        .find(|d| d.guid == guid)
+                        .map(|d| d.nome.clone());
+                    dispositivos::salva_dispositivo_gravacao(&guid, nome.as_deref());
+                }
                 if let Tela::Sala(s) = &mut self.tela {
                     if let Some(pa) = &mut s.painel_audio {
                         pa.entrada_selecionada = Some(guid.clone());
@@ -2460,7 +2470,16 @@ impl App {
                     p.sub = None;
                 }
                 self.painel_audio.saida_selecionada = Some(guid.clone());
-                dispositivos::salva_dispositivo_reproducao(&guid);
+                // Na chamada quem salva é o ator (com o ADM dele).
+                if !self.em_chamada() {
+                    let nome = self
+                        .painel_audio
+                        .saidas
+                        .iter()
+                        .find(|d| d.guid == guid)
+                        .map(|d| d.nome.clone());
+                    dispositivos::salva_dispositivo_reproducao(&guid, nome.as_deref());
+                }
                 if let Tela::Sala(s) = &mut self.tela {
                     if let Some(pa) = &mut s.painel_audio {
                         pa.saida_selecionada = Some(guid.clone());
