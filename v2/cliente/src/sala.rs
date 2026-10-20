@@ -2110,7 +2110,6 @@ impl Ator {
         let dono = self.meu_id.clone();
         let mut saida = self.saida.clone();
         tokio::spawn(async move {
-            use iced::futures::SinkExt as _;
             while let Some((w, h, rgba)) = rx_quadro.recv().await {
                 let quadro = Quadro {
                     dono: dono.clone(),
@@ -2119,7 +2118,11 @@ impl Ator {
                     altura: h,
                     rgba,
                 };
-                if saida.send(Evento::Quadro(quadro)).await.is_err() {
+                // try_send: if the UI is busy the frame is dropped. Awaiting here
+                // let the unbounded capture queue grow until the system ran out of memory.
+                if let Err(e) = saida.try_send(Evento::Quadro(quadro))
+                    && e.is_disconnected()
+                {
                     break;
                 }
             }
@@ -2222,7 +2225,6 @@ impl Ator {
         let dono = self.meu_id.clone();
         let mut saida = self.saida.clone();
         tokio::spawn(async move {
-            use iced::futures::SinkExt as _;
             while let Some((w, h, rgba)) = rx_previa.recv().await {
                 let quadro = Quadro {
                     dono: dono.clone(),
@@ -2231,7 +2233,11 @@ impl Ator {
                     altura: h,
                     rgba,
                 };
-                if saida.send(Evento::Quadro(quadro)).await.is_err() {
+                // try_send: if the UI is busy the frame is dropped. Awaiting here
+                // let the unbounded capture queue grow until the system ran out of memory.
+                if let Err(e) = saida.try_send(Evento::Quadro(quadro))
+                    && e.is_disconnected()
+                {
                     break;
                 }
             }
@@ -3247,7 +3253,6 @@ impl Ator {
                 let dono = id.to_string();
                 let mut saida = self.saida.clone();
                 tokio::spawn(async move {
-                    use iced::futures::SinkExt as _;
                     let mut fluxo = NativeVideoStream::new(video);
                     // A interface não precisa de mais que ~30 quadros/s, e cada quadro
                     // em RGBA é grande: converter só o que vai ser mostrado.
@@ -3283,7 +3288,11 @@ impl Ator {
                             altura: h,
                             rgba,
                         };
-                        if saida.send(Evento::Quadro(quadro)).await.is_err() {
+                        // try_send: if the UI is busy the frame is dropped. Awaiting here
+                        // let the unbounded capture queue grow until the system ran out of memory.
+                        if let Err(e) = saida.try_send(Evento::Quadro(quadro))
+                            && e.is_disconnected()
+                        {
                             break;
                         }
                     }
