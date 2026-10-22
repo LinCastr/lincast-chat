@@ -71,6 +71,8 @@ fn circulo<'a>(url: Option<&str>, chave: &str, nome: &str, tamanho: f32) -> Elem
 
 /// Avatar redondo. `status` desenha a bolinha no canto inferior direito, com
 /// um aro da cor de `fundo_do_aro` (a cor do painel onde o avatar está).
+/// Leva a decoração que a pessoa (`chave` = uid) escolheu, animada com o mouse
+/// em cima.
 pub fn avatar<'a>(
     url: Option<&str>,
     chave: &str,
@@ -79,7 +81,62 @@ pub fn avatar<'a>(
     status: Option<&str>,
     fundo_do_aro: Color,
 ) -> Element<'a, Msg> {
+    let deco = crate::cosmeticos::de(chave)
+        .decoracao
+        .as_ref()
+        .map(|d| d.arquivo.clone());
+    avatar_com(
+        url,
+        chave,
+        nome,
+        tamanho,
+        status,
+        fundo_do_aro,
+        deco.as_deref(),
+        false,
+    )
+}
+
+/// Escala da decoração em relação à foto (a do Discord passa 20% da borda).
+pub const ESCALA_DECORACAO: f32 = 1.2;
+
+/// Como `avatar`, com a decoração dada (prévias, perfil). `animar` faz ela
+/// andar sempre; senão, só com o mouse em cima.
+#[allow(clippy::too_many_arguments)]
+pub fn avatar_com<'a>(
+    url: Option<&str>,
+    chave: &str,
+    nome: &str,
+    tamanho: f32,
+    status: Option<&str>,
+    fundo_do_aro: Color,
+    decoracao: Option<&str>,
+    animar: bool,
+) -> Element<'a, Msg> {
     let base = circulo(url, chave, nome, tamanho);
+    let deco: Option<Element<'a, Msg>> = decoracao.and_then(|d| {
+        let anda = animar || crate::gifanim::em_hover(d);
+        crate::cosmeticos::quadro(d, anda).map(|q| {
+            crate::ui::transborda::transborda(
+                crate::ui::loja::img_q(q, Length::Fill, Length::Fill, ContentFit::Contain),
+                iced::Size::new(tamanho, tamanho),
+                ESCALA_DECORACAO,
+            )
+        })
+    });
+    let base: Element<'a, Msg> = match deco {
+        Some(d) => {
+            let pilha = stack![base, d].width(tamanho).height(tamanho);
+            match decoracao.filter(|_| !animar) {
+                Some(u) => iced::widget::mouse_area(pilha)
+                    .on_enter(Msg::HoverGif(Some(u.to_string())))
+                    .on_exit(Msg::HoverGif(None))
+                    .into(),
+                None => pilha.into(),
+            }
+        }
+        None => base,
+    };
     let Some(st) = status else {
         return base;
     };

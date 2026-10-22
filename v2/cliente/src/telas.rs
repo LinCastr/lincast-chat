@@ -237,12 +237,12 @@ pub(crate) fn botao_icone<'a>(
     let cor = if perigoso {
         c.perigo
     } else if ligado {
-        c.destaque
+        tema::texto_forte()
     } else {
-        c.texto_fraco
+        c.texto_medio
     };
-    button(svg(icone).width(18).height(18).style(tema::icone_cor(cor)))
-        .padding(7)
+    button(svg(icone).width(20).height(20).style(tema::icone_cor(cor)))
+        .padding(6)
         .style(tema::botao_icone(ligado, perigoso))
         .on_press_maybe(msg)
         .into()

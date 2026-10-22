@@ -9,6 +9,7 @@ use crate::api::{EstadoWordle, GrupoWordle, JogadorWordle};
 use crate::sala::Mensagem;
 use crate::tarefas::em_segundo_plano;
 use crate::ui::efeitos::ico;
+use crate::ui::texto_sel::texto_sel;
 use crate::{Msg, SalaAberta, anim, api, fraco, icones, negrito, tema};
 
 const VERDE: Color = tema::rgb(0x538d4e);
@@ -853,9 +854,14 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
     let mut corpo = Column::new().spacing(6);
     corpo = corpo.push(
         row![
-            iced::widget::mouse_area(text("Wordle").size(14).font(negrito()))
-                .interaction(iced::mouse::Interaction::Pointer)
-                .on_press(abre_previa_app()),
+            iced::widget::mouse_area(
+                text("Wordle")
+                    .size(15)
+                    .font(negrito())
+                    .color(tema::texto_forte())
+            )
+            .interaction(iced::mouse::Interaction::Pointer)
+            .on_press(abre_previa_app()),
             container(text("APP").size(10).font(negrito()).color(Color::WHITE))
                 .padding([1, 5])
                 .style(move |_| container::Style {
@@ -866,9 +872,11 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
                     },
                     ..Default::default()
                 }),
-            text(crate::ui::conversa::quando(m.ts))
-                .size(12)
-                .style(fraco),
+            texto_sel(
+                crate::ui::conversa::quando(m.ts),
+                11.5,
+                tema::texto_apagado()
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -876,9 +884,12 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
     if let Some(g) = grupo {
         let ontem = ordena_resultados(&g.ontem);
         if g.streak > 0 && !ontem.is_empty() {
-            corpo =
-                corpo.push(text(format!("Your group is on a {} day streak!", g.streak)).size(14));
-            corpo = corpo.push(text("Here are yesterday's results:").size(14));
+            corpo = corpo.push(texto_sel(
+                format!("Your group is on a {} day streak!", g.streak),
+                14.0,
+                c.texto,
+            ));
+            corpo = corpo.push(texto_sel("Here are yesterday's results:", 14.0, c.texto));
             for (i, j) in ontem.iter().enumerate() {
                 let placar = if j.fim.as_deref() == Some("ganhou") {
                     format!("{}/6", j.n)
@@ -892,7 +903,7 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
                         } else {
                             space().width(14).into()
                         },
-                        text(format!("{placar}: @{}", j.name)).size(14),
+                        texto_sel(format!("{placar}: @{}", j.name), 14.0, c.texto),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -901,7 +912,7 @@ pub fn mensagem_app<'a>(m: &'a Mensagem, grupo: Option<&'a GrupoWordle>) -> Elem
         }
         if !g.hoje.is_empty() {
             let nomes: Vec<&str> = g.hoje.iter().map(|j| j.name.as_str()).collect();
-            corpo = corpo.push(text(frase_jogando(&nomes)).size(14));
+            corpo = corpo.push(texto_sel(frase_jogando(&nomes), 14.0, c.texto));
             // Como no Discord: uma pessoa, avatar grande ao lado da grade; mais
             // de uma, um cartão em pé por pessoa (avatar em cima).
             let sozinho = g.hoje.len() == 1;

@@ -57,6 +57,21 @@ impl App {
             Subscription::none()
         };
 
+        let sub_cosmeticos = if crate::cosmeticos::tem_pedidos() {
+            iced::time::every(std::time::Duration::from_millis(120)).map(|_| Msg::TickCosmeticos)
+        } else {
+            Subscription::none()
+        };
+
+        // 16 ms: os quadros das decorações duram 83 ms (12 fps) ou 50 ms; com
+        // relógio de 33 ms cada quadro ficava 66 ou 99 ms na tela, alternando,
+        // e a animação parecia travar.
+        let sub_anim_cosmeticos = if crate::cosmeticos::animando() {
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Msg::TickGif)
+        } else {
+            Subscription::none()
+        };
+
         let sub_gif = if crate::gifanim::animando() {
             iced::time::every(std::time::Duration::from_millis(50)).map(|_| Msg::TickGif)
         } else {
@@ -107,6 +122,8 @@ impl App {
             sub_bandeja,
             sub_anim,
             sub_gif,
+            sub_cosmeticos,
+            sub_anim_cosmeticos,
             sub_presenca,
             sub_toast,
         ];
@@ -528,11 +545,20 @@ impl App {
                     v.push(item(
                         icones::maximizar(),
                         "Tela cheia",
-                        Msg::AlternaTelaCheiaVideo(Some((dono.clone(), *de_tela))),
+                        Msg::MenuFaz(Box::new(Msg::AlternaTelaCheiaVideo(Some((
+                            dono.clone(),
+                            *de_tela,
+                        ))))),
                         false,
                     ));
                 }
                 if minha && *de_tela {
+                    v.push(item(
+                        icones::configuracoes(),
+                        "Configurações da transmissão",
+                        Msg::MenuFaz(Box::new(Msg::ConfiguraTransmissao)),
+                        false,
+                    ));
                     let oculta = matches!(&self.tela, Tela::Sala(s) if s.previa_propria_oculta);
                     v.push(item(
                         icones::olho(),
@@ -541,7 +567,7 @@ impl App {
                         } else {
                             "Parar de ver minha tela"
                         },
-                        Msg::AlternaPreviaPropria,
+                        Msg::MenuFaz(Box::new(Msg::AlternaPreviaPropria)),
                         false,
                     ));
                 }
@@ -549,14 +575,14 @@ impl App {
                     v.push(item(
                         icones::tela_off(),
                         "Parar de transmitir",
-                        Msg::ParaTela,
+                        Msg::MenuFaz(Box::new(Msg::ParaTela)),
                         true,
                     ));
                 } else {
                     v.push(item(
                         icones::fechar(),
                         "Parar de assistir",
-                        Msg::PausaTransmissao(dono.clone(), *de_tela),
+                        Msg::MenuFaz(Box::new(Msg::PausaTransmissao(dono.clone(), *de_tela))),
                         false,
                     ));
                 }
@@ -699,15 +725,32 @@ impl App {
                     .is_some_and(|d| d.contains(uid));
                 let eu_na_chamada = sala.is_some_and(|s| s.na_chamada);
                 if let (Some(c), true, false, false) = (conv, eu_na_chamada, dentro, sou_eu) {
-                    v.push(item(
-                        icones::chamada(),
-                        "Toque para chamar",
-                        Msg::TocaPara {
-                            conversa: c.id.clone(),
-                            uid: uid.clone(),
-                        },
-                        false,
-                    ));
+                    let tocando = self
+                        .avisos
+                        .chamando
+                        .get(&c.id)
+                        .is_some_and(|t| t.contains(uid));
+                    v.push(if tocando {
+                        item(
+                            icones::desligar(),
+                            "Parar de chamar",
+                            Msg::ParaDeTocar {
+                                conversa: c.id.clone(),
+                                uid: uid.clone(),
+                            },
+                            true,
+                        )
+                    } else {
+                        item(
+                            icones::chamada(),
+                            "Toque para chamar",
+                            Msg::TocaPara {
+                                conversa: c.id.clone(),
+                                uid: uid.clone(),
+                            },
+                            false,
+                        )
+                    });
                 }
                 if let Some(p) = sala
                     .filter(|_| dentro && !sou_eu)
@@ -798,6 +841,8 @@ impl App {
     }
 
     pub(crate) fn view(&self) -> Element<'_, Msg> {
+        let _medida = crate::anim::MedeView::agora();
+        crate::cosmeticos::novo_desenho();
         anim::inicio_quadro();
         let base: Element<'_, Msg> = match &self.tela {
             Tela::Carregando => center(text("Abrindo…").style(fraco))
@@ -1213,6 +1258,33 @@ impl App {
                 )
             ]
             .into();
+        }
+
+        if self.loja.is_some() || self.estilo_nome.is_some() {
+            let uid = self.avisos.meu_uid().unwrap_or("");
+            let minha = crate::cosmeticos::de(uid);
+            let e = self.eu.as_ref();
+            let eu = ui::loja::Eu {
+                uid,
+                nome: e.map(|e| e.name.as_str()).unwrap_or(""),
+                usuario: e.and_then(|e| e.usuario.as_deref()),
+                avatar: e.and_then(|e| e.avatar.as_deref()),
+                banner: e.and_then(|e| e.banner_url.as_deref()),
+                cor: e
+                    .and_then(|e| e.perfil.as_ref())
+                    .and_then(|p| p.cor.as_deref())
+                    .and_then(ui::perfil::parse_hex_color)
+                    .unwrap_or_else(|| tema::cor_de_avatar(uid)),
+                escolha: &minha,
+            };
+            if let Some(l) = &self.loja {
+                tela_final =
+                    iced::widget::stack![tela_final, ui::loja::tela(l, &eu, self.janela)].into();
+            }
+            if let Some(ed) = &self.estilo_nome {
+                tela_final =
+                    iced::widget::stack![tela_final, ui::estilo_nome::modal(ed, &eu)].into();
+            }
         }
 
         tela_final = self.com_popup_voz(tela_final);

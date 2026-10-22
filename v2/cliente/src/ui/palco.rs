@@ -7,6 +7,8 @@ use iced::{Alignment, Background, Border, Color, Element, Length};
 use crate::{Msg, fraco, icones, negrito, tema, ui};
 
 pub struct PessoaNoPalco<'a> {
+    /// Conversation id (to stop ringing this person).
+    pub conversa: &'a str,
     pub uid: &'a str,
     pub nome: &'a str,
     pub usuario: Option<&'a str>,
@@ -15,6 +17,8 @@ pub struct PessoaNoPalco<'a> {
     pub mudo: bool,
     /// Está tocando: ainda não entrou.
     pub chamando: bool,
+    /// Camera on: the camera rectangle takes the place of the avatar tile.
+    pub com_camera: bool,
 }
 
 pub struct BarraDoPalco {
@@ -97,6 +101,49 @@ fn tile<'a>(p: &PessoaNoPalco<'a>, pulso: bool, fundo: Color) -> Element<'a, Msg
             .height(Length::Fill)
             .align_x(Alignment::End)
             .align_y(Alignment::End)
+            .into(),
+        );
+    }
+    if p.chamando {
+        // Ringing: a button to stop calling this person (top right).
+        let parar = button(
+            svg(icones::fechar())
+                .width(12)
+                .height(12)
+                .style(tema::icone_cor(Color::WHITE)),
+        )
+        .padding(5)
+        .style(move |_, st| button::Style {
+            background: Some(Background::Color(
+                if matches!(st, button::Status::Hovered) {
+                    c.perigo
+                } else {
+                    c.forte
+                },
+            )),
+            border: Border {
+                color: fundo,
+                width: 2.0,
+                radius: 12.0.into(),
+            },
+            ..Default::default()
+        })
+        .on_press(Msg::ParaDeTocar {
+            conversa: p.conversa.to_string(),
+            uid: p.uid.to_string(),
+        });
+        camadas.push(
+            container(iced::widget::tooltip(
+                parar,
+                container(text("Parar de chamar").size(12))
+                    .padding([4, 8])
+                    .style(tema::dica),
+                iced::widget::tooltip::Position::Top,
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::Start)
             .into(),
         );
     }
@@ -216,8 +263,8 @@ fn barra<'a>(b: &BarraDoPalco) -> Element<'a, Msg> {
                 icones::mic()
             },
             "Microfone",
-            b.mudo,
             false,
+            b.mudo,
             (!b.mudo_forcado).then_some(Msg::AlternaMudo),
         ),
         botao_da_barra(
@@ -258,7 +305,7 @@ fn barra<'a>(b: &BarraDoPalco) -> Element<'a, Msg> {
     ]);
     let extras = grupo(vec![
         botao_da_barra(
-            icones::grade(),
+            icones::atividades(),
             "Atividades",
             b.menu_atividades_aberto,
             false,
@@ -415,6 +462,7 @@ pub fn palco<'a>(
         // As transmissões entram como retângulos ao lado dos avatares.
         let tiles = row(pessoas
             .iter()
+            .filter(|p| !p.com_camera)
             .map(|p| tile(p, pulso, c.palco))
             .chain(transmissoes))
         .spacing(12)

@@ -106,3 +106,40 @@ pub(crate) fn baixa_previa_gif(url: String, previa_url: String) -> Task<Msg> {
         },
     )
 }
+
+/// Busca (disco, senão rede) e decodifica um cosmético; guarda no cache
+/// global e avisa para redesenhar.
+pub(crate) fn baixa_cosmetico(srv: Servidor, url: String, animar: bool) -> Task<Msg> {
+    em_segundo_plano(
+        move || {
+            let bytes = match crate::cosmeticos::le_do_disco(&url) {
+                Some(b) => Ok(b),
+                None => api::baixa_imagem(&srv, None, &url)
+                    .inspect(|b| crate::cosmeticos::grava_no_disco(&url, b))
+                    .map_err(|e| format!("{e:#}")),
+            };
+            let r = bytes.and_then(|b| {
+                if url.contains("/mini/") {
+                    crate::cosmeticos::calcula_cor(&url, &b);
+                }
+                crate::cosmeticos::decodifica(&url, &b, animar)
+            });
+            crate::cosmeticos::guarda(&url, r);
+        },
+        |()| Msg::CosmeticoPronto,
+    )
+}
+
+pub(crate) fn carrega_cosmeticos(srv: Servidor, token: Option<String>) -> Task<Msg> {
+    let s2 = srv.clone();
+    let cat = em_segundo_plano(
+        move || api::catalogo_cosmeticos(&s2).map_err(|e| format!("{e:#}")),
+        Msg::CatalogoCosmeticos,
+    );
+    let Some(t) = token else { return cat };
+    let pessoas = em_segundo_plano(
+        move || api::cosmeticos_pessoas(&srv, &t).map_err(|e| format!("{e:#}")),
+        Msg::PessoasCosmeticos,
+    );
+    Task::batch([cat, pessoas])
+}

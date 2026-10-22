@@ -185,7 +185,7 @@ pub const SECOES_MANUAL: &[SecaoManual] = &[
             },
             ItemManual {
                 titulo: "Controle de Volume Individual",
-                descricao: "Ajuste o volume de cada pessoa na sala de 0% a 200% com persistência por conta de usuário.",
+                descricao: "Ajuste o volume de cada pessoa na sala de 0% a 400% com persistência por conta de usuário.",
             },
             ItemManual {
                 titulo: "Atividade (Jogando / Ouvindo)",

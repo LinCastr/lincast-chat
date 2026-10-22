@@ -7,8 +7,9 @@
 use std::ops::Range;
 
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::renderer;
-use iced::advanced::widget::{self, Tree, Widget};
+use iced::advanced::renderer::{self, Renderer as _};
+use iced::advanced::text::{self as atext, Paragraph as _, Renderer as _};
+use iced::advanced::widget::{self, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, mouse, overlay};
 use iced::widget::text_editor::{self, Content};
 use iced::{Color, Element, Event, Font, Length, Rectangle, Size, Theme, Vector};
@@ -108,7 +109,7 @@ impl iced::advanced::text::Highlighter for RealceChat {
 fn formato(r: &Realce, _: &Theme) -> iced::advanced::text::highlighter::Format<Font> {
     match r {
         Realce::Link => iced::advanced::text::highlighter::Format {
-            color: Some(tema::cores().destaque),
+            color: Some(tema::cor_link()),
             font: None,
         },
         Realce::Emoji => iced::advanced::text::highlighter::Format {
@@ -142,16 +143,74 @@ pub fn vista<'a>(chave: &str, sel: &'a TextoSelecionavel, tamanho: f32) -> Eleme
         });
     Element::new(SemRolagem {
         conteudo: editor.into(),
+        texto: &sel.texto,
+        tamanho,
     })
 }
 
+type Paragrafo = <iced::Renderer as atext::Renderer>::Paragraph;
+
+/// A copy of the text laid out like the editor, split in spans, only to know
+/// which link is under the mouse (the editor cannot tell).
+#[derive(Default)]
+struct Estado {
+    paragrafo: Option<Paragrafo>,
+    largura: f32,
+    /// Span indices that are links.
+    links: Vec<usize>,
+    hover: Option<usize>,
+}
+
+impl Estado {
+    fn link_em(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<usize> {
+        let p = cursor.position_in(layout.bounds())?;
+        let i = self.paragrafo.as_ref()?.hit_span(p)?;
+        self.links.contains(&i).then_some(i)
+    }
+}
+
+/// Text, link and emoji spans, the same split the highlighter paints.
+fn spans(texto: &str) -> (Vec<atext::Span<'_, (), Font>>, Vec<usize>) {
+    let mut v = Vec::new();
+    let mut links = Vec::new();
+    for seg in separa_links(texto) {
+        match seg {
+            SegmentoTexto::Link(u) => {
+                links.push(v.len());
+                v.push(atext::Span::new(u));
+            }
+            SegmentoTexto::Texto(t) => {
+                for (e, pedaco) in tema::trechos_de_emoji(t) {
+                    let mut sp = atext::Span::new(pedaco);
+                    if e {
+                        sp.font = Some(tema::FONTE_EMOJI);
+                    }
+                    v.push(sp);
+                }
+            }
+        }
+    }
+    (v, links)
+}
+
 /// Repassa tudo ao filho, menos a roda do mouse: assim a rolagem do chat
-/// continua funcionando com o mouse em cima do texto.
+/// continua funcionando com o mouse em cima do texto. Também dá ao link sob o
+/// mouse o cursor de mão, fundo e sublinhado.
 struct SemRolagem<'a> {
     conteudo: Element<'a, Msg>,
+    texto: &'a str,
+    tamanho: f32,
 }
 
 impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<Estado>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(Estado::default())
+    }
+
     fn size(&self) -> Size<Length> {
         self.conteudo.as_widget().size()
     }
@@ -174,9 +233,29 @@ impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.conteudo
+        let no = self
+            .conteudo
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+            .layout(&mut tree.children[0], renderer, limits);
+        let largura = no.size().width;
+        let est = tree.state.downcast_mut::<Estado>();
+        if est.paragrafo.is_none() || est.largura != largura {
+            let (sp, links) = spans(self.texto);
+            est.paragrafo = Some(Paragrafo::with_spans(atext::Text {
+                content: sp.as_slice(),
+                bounds: Size::new(largura, f32::INFINITY),
+                size: self.tamanho.into(),
+                line_height: atext::LineHeight::default(),
+                font: renderer.default_font(),
+                align_x: atext::Alignment::Default,
+                align_y: iced::alignment::Vertical::Top,
+                shaping: atext::Shaping::Advanced,
+                wrapping: atext::Wrapping::default(),
+            }));
+            est.largura = largura;
+            est.links = links;
+        }
+        no
     }
 
     fn operate(
@@ -205,6 +284,14 @@ impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
         if matches!(event, Event::Mouse(mouse::Event::WheelScrolled { .. })) {
             return;
         }
+        if let Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) = event {
+            let est = tree.state.downcast_mut::<Estado>();
+            let hover = est.link_em(layout, cursor);
+            if hover != est.hover {
+                est.hover = hover;
+                shell.request_redraw();
+            }
+        }
         self.conteudo.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -225,6 +312,14 @@ impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
         viewport: &Rectangle,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
+        if tree
+            .state
+            .downcast_ref::<Estado>()
+            .link_em(layout, cursor)
+            .is_some()
+        {
+            return mouse::Interaction::Pointer;
+        }
         self.conteudo.as_widget().mouse_interaction(
             &tree.children[0],
             layout,
@@ -244,6 +339,31 @@ impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let est = tree.state.downcast_ref::<Estado>();
+        // Computed here from the cursor: the stored `hover` is lost whenever the
+        // message row changes shape (its hover bar appears) and the tree is rebuilt.
+        let hover = est
+            .link_em(layout, cursor)
+            .zip(est.paragrafo.as_ref())
+            .map(|(i, p)| p.span_bounds(i))
+            .unwrap_or_default();
+        let origem = layout.bounds().position();
+        let cor = tema::cor_link();
+        for r in &hover {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: origem.x + r.x - 1.0,
+                        y: origem.y + r.y,
+                        width: r.width + 2.0,
+                        height: r.height,
+                    },
+                    border: iced::Border::default().rounded(3),
+                    ..Default::default()
+                },
+                Color { a: 0.15, ..cor },
+            );
+        }
         self.conteudo.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -253,6 +373,20 @@ impl Widget<Msg, Theme, iced::Renderer> for SemRolagem<'_> {
             cursor,
             viewport,
         );
+        for r in &hover {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: Rectangle {
+                        x: origem.x + r.x,
+                        y: origem.y + r.y + r.height - 2.0,
+                        width: r.width,
+                        height: 1.0,
+                    },
+                    ..Default::default()
+                },
+                cor,
+            );
+        }
     }
 
     fn overlay<'b>(

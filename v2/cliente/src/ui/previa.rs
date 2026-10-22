@@ -24,13 +24,14 @@ pub struct DadosPrevia<'a> {
     pub sou_eu: bool,
 }
 
-fn cartao<'a>(corpo: Element<'a, Msg>) -> Element<'a, Msg> {
+fn cartao<'a>(corpo: Element<'a, Msg>, escolha: &crate::cosmeticos::Escolha) -> Element<'a, Msg> {
     let c = tema::cores();
-    container(corpo)
+    let fundo = crate::ui::loja::fundo_do_cartao(escolha);
+    let cartao = container(crate::ui::loja::com_efeito(corpo, escolha))
         .width(LARGURA)
         .clip(true)
         .style(move |_| container::Style {
-            background: Some(Background::Color(c.lateral)),
+            background: Some(fundo),
             text_color: Some(c.texto),
             border: Border {
                 color: c.borda,
@@ -44,7 +45,8 @@ fn cartao<'a>(corpo: Element<'a, Msg>) -> Element<'a, Msg> {
             },
             ..Default::default()
         })
-        .into()
+        .into();
+    crate::ui::loja::com_moldura(cartao, escolha)
 }
 
 fn topo_redondo() -> iced::border::Radius {
@@ -105,8 +107,16 @@ pub fn previa<'a>(d: DadosPrevia<'a>) -> Element<'a, Msg> {
         faixa(d.banner, cor, 72.0, space().into()),
         space().height(36)
     ];
-    let foto = container(crate::ui::avatar::avatar(
-        d.avatar, d.uid, d.nome, 64.0, d.status, c.lateral,
+    let escolha = crate::cosmeticos::de(d.uid);
+    let foto = container(crate::ui::avatar::avatar_com(
+        d.avatar,
+        d.uid,
+        d.nome,
+        64.0,
+        d.status,
+        c.lateral,
+        escolha.decoracao.as_ref().map(|x| x.arquivo.as_str()),
+        true,
     ))
     .padding(Padding {
         top: 40.0,
@@ -115,7 +125,14 @@ pub fn previa<'a>(d: DadosPrevia<'a>) -> Element<'a, Msg> {
     });
     let mut corpo = column![stack![topo, foto]].spacing(0);
 
-    let mut info = column![text(d.nome).size(17).font(negrito())].spacing(2);
+    let mut info = column![crate::ui::nome::nome(
+        d.nome,
+        escolha.nome.as_ref(),
+        17.0,
+        c.texto,
+        negrito()
+    )]
+    .spacing(2);
     if let Some(u) = d.usuario {
         info = info.push(text(format!("@{u}")).size(12).style(fraco));
     }
@@ -154,7 +171,7 @@ pub fn previa<'a>(d: DadosPrevia<'a>) -> Element<'a, Msg> {
         ));
     }
     corpo = corpo.push(container(acoes).padding([8, 14]));
-    cartao(corpo.into())
+    cartao(corpo.into(), &escolha)
 }
 
 /// Prévia de um app (o bot do Wordle).
@@ -210,5 +227,6 @@ pub fn previa_app<'a>(nome: &'a str) -> Element<'a, Msg> {
             space().height(10)
         ]
         .into(),
+        &crate::cosmeticos::Escolha::default(),
     )
 }

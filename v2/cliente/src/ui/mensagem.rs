@@ -14,7 +14,7 @@ pub fn barra_hover<'a>(id: &str, autor: &str, texto: &str) -> Element<'a, Msg> {
     let c = tema::cores();
     let botao = |conteudo: Element<'a, Msg>, msg: Msg| -> Element<'a, Msg> {
         button(conteudo)
-            .padding([3, 5])
+            .padding([2, 5])
             .style(tema::botao_icone(false, false))
             .on_press(msg)
             .into()
@@ -22,7 +22,7 @@ pub fn barra_hover<'a>(id: &str, autor: &str, texto: &str) -> Element<'a, Msg> {
     let mut r = row![].spacing(0).align_y(Alignment::Center);
     for e in REACOES_RAPIDAS {
         r = r.push(botao(
-            text(e).size(14).font(crate::tema::FONTE_EMOJI).into(),
+            text(e).size(13).font(crate::tema::FONTE_EMOJI).into(),
             Msg::ReagirChat {
                 id: id.to_string(),
                 emoji: e.to_string(),

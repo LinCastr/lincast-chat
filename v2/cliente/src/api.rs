@@ -1437,3 +1437,48 @@ mod testes_perfil_completo {
         assert_eq!((r.de_nome.as_str(), r.texto.as_str()), ("Bob", "oi"));
     }
 }
+
+// --- Cosméticos de perfil ------------------------------------------------------
+
+pub fn catalogo_cosmeticos(srv: &Servidor) -> Result<Vec<crate::cosmeticos::Item>> {
+    let mut r = agente().get(&srv.url("/api/cosmeticos")).call()?;
+    if r.status().as_u16() != 200 {
+        anyhow::bail!("servidor respondeu {}", r.status().as_u16());
+    }
+    let v: Value = r.body_mut().read_json()?;
+    Ok(v["itens"]
+        .as_array()
+        .map(|l| {
+            l.iter()
+                .filter_map(|i| serde_json::from_value(i.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub fn cosmeticos_pessoas(
+    srv: &Servidor,
+    token: &str,
+) -> Result<std::collections::HashMap<String, crate::cosmeticos::Escolha>> {
+    let mut r = com_sessao(agente().get(&srv.url("/api/cosmeticos/pessoas")), token).call()?;
+    if r.status().as_u16() != 200 {
+        anyhow::bail!("servidor respondeu {}", r.status().as_u16());
+    }
+    let v: Value = r.body_mut().read_json()?;
+    Ok(serde_json::from_value(v["pessoas"].clone()).unwrap_or_default())
+}
+
+pub fn salva_cosmeticos(
+    srv: &Servidor,
+    token: &str,
+    e: &crate::cosmeticos::Escolha,
+) -> Result<Option<crate::cosmeticos::Escolha>> {
+    let mut r = com_sessao(agente().post(&srv.url("/api/conta/cosmeticos")), token)
+        .send_json(e.para_envio())?;
+    let status = r.status().as_u16();
+    let v: Value = r.body_mut().read_json()?;
+    if status != 200 {
+        anyhow::bail!("{}", erro_do_corpo(&v, status));
+    }
+    Ok(serde_json::from_value(v["cosmeticos"].clone()).ok())
+}

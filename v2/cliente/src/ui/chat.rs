@@ -564,7 +564,7 @@ pub fn renderiza_texto_com_links<'a>(texto: &'a str, editada: bool) -> Element<'
                 }
             }
             SegmentoTexto::Link(url) => {
-                spans.push(span(url).color(c.destaque).link(url.to_string()));
+                spans.push(span(url).color(tema::cor_link()).link(url.to_string()));
             }
         }
     }

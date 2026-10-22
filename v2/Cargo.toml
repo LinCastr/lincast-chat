@@ -4,6 +4,13 @@
 [workspace]
 resolver = "3"
 members = ["cliente", "concord-audio", "prototipo-tela"]
+exclude = ["vendor"]
+
+# Local copies of libwebrtc/webrtc-sys with one addition: `RtcAudioTrack::set_volume`
+# (playout gain of a remote track, which the published crates do not expose).
+[patch.crates-io]
+libwebrtc = { path = "vendor/libwebrtc" }
+webrtc-sys = { path = "vendor/webrtc-sys" }
 
 [profile.dev.package."*"]
 # Dependências otimizadas mesmo no build de desenvolvimento: codificar vídeo e

@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 const PADRAO: f32 = 1.0;
+/// Highest per-person/stream volume (400%), like Discord.
+pub const MAXIMO: f32 = 4.0;
 
 fn arquivo_volumes() -> Option<PathBuf> {
     let novo_dir = directories::ProjectDirs::from("", "", "lincast-chat")?;
@@ -55,14 +57,14 @@ pub fn obter(uid: Option<&str>, nome: &str, de_tela: bool) -> f32 {
     if let Some(chave) = chave_para(uid, nome, de_tela)
         && let Some(&vol) = todos.get(&chave)
     {
-        return vol.clamp(0.0, 2.0);
+        return vol.clamp(0.0, MAXIMO);
     }
     // Fallback: se temos uid mas não achou nele, tenta buscar pela chave antiga (só o nome)
     if uid.is_some()
         && let Some(chave_antiga) = chave_para(None, nome, de_tela)
         && let Some(&vol) = todos.get(&chave_antiga)
     {
-        return vol.clamp(0.0, 2.0);
+        return vol.clamp(0.0, MAXIMO);
     }
     PADRAO
 }
@@ -76,7 +78,7 @@ pub fn salvar(uid: Option<&str>, nome: &str, de_tela: bool, volume: f32) {
     };
 
     let mut todos = carrega_todos();
-    let volume = volume.clamp(0.0, 2.0);
+    let volume = volume.clamp(0.0, MAXIMO);
 
     // Se salvamos com uid, limpa chave legada por nome para evitar conflito com homônimos
     if uid.is_some()

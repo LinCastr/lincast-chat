@@ -153,14 +153,42 @@ fn linha_de_conversa<'a>(
             cores.texto_fraco,
         )
     };
-    let mut linha = row![
-        icone,
-        column![text(nome).size(14).font(negrito()), sub]
-            .spacing(1)
-            .width(Length::Fill),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
+    // Como na lista de DMs do Discord: nome apagado em repouso, clareia com o
+    // mouse em cima e fica branco na conversa aberta ou com não lidas.
+    let id_hover = format!("conv-{}", c.id);
+    let nao_lida = ctx.avisos.nao_lidas.get(&c.id).is_some_and(|n| *n > 0);
+    let (cor_nome, fonte_nome) = if ativa || nao_lida {
+        (tema::texto_forte(), negrito())
+    } else {
+        (
+            tema::mistura(cores.texto_medio, cores.texto, crate::anim::t(&id_hover)),
+            iced::Font {
+                weight: iced::font::Weight::Medium,
+                ..tema::FONTE
+            },
+        )
+    };
+    // Conversa direta: nome com o estilo e placa da outra pessoa.
+    let uid_dm = (c.tipo != "grupo")
+        .then(|| outros.first().map(|m| m.uid.clone()))
+        .flatten();
+    let dm_offline = uid_dm.is_some()
+        && outros.first().is_some_and(|m| {
+            ctx.avisos
+                .status_amigos
+                .get(&m.uid)
+                .map(String::as_str)
+                .or(m.status.as_deref())
+                .unwrap_or("offline")
+                == "offline"
+        });
+    let nome_el: Element<'a, Msg> = match &uid_dm {
+        Some(u) => ui::nome::nome_de(u, &nome, 14.0, cor_nome, fonte_nome),
+        None => text(nome).size(14).font(fonte_nome).color(cor_nome).into(),
+    };
+    let mut linha = row![icone, column![nome_el, sub].spacing(1).width(Length::Fill),]
+        .spacing(12)
+        .align_y(Alignment::Center);
     if em_chamada {
         linha = linha.push(
             svg(icones::volume())
@@ -174,8 +202,8 @@ fn linha_de_conversa<'a>(
             container(text(n.to_string()).size(11).font(negrito()))
                 .padding([1, 7])
                 .style(move |_| container::Style {
-                    background: Some(Background::Color(cores.destaque)),
-                    text_color: Some(cores.sobre_destaque),
+                    background: Some(Background::Color(cores.perigo)),
+                    text_color: Some(iced::Color::WHITE),
                     border: Border {
                         radius: 10.0.into(),
                         ..Default::default()
@@ -184,10 +212,19 @@ fn linha_de_conversa<'a>(
                 }),
         );
     }
-    let id_hover = format!("conv-{}", c.id);
-    let btn = button(linha)
+    let corpo: Element<'a, Msg> = match &uid_dm {
+        Some(u) => crate::ui::loja::com_placa(
+            container(linha).padding([6, 8]).into(),
+            u,
+            crate::anim::dentro_desde(&id_hover),
+            dm_offline,
+            cores.lateral,
+        ),
+        None => container(linha).padding([6, 8]).into(),
+    };
+    let btn = button(corpo)
         .width(Length::Fill)
-        .padding([6, 8])
+        .padding(0)
         .style(efeitos::item_suave(id_hover.clone(), ativa))
         .on_press(Msg::AbreSala(c.id.clone()));
     iced::widget::mouse_area(btn)
@@ -327,7 +364,7 @@ fn painel_de_voz<'a>(ch: &ChamadaLocal<'a>) -> Element<'a, Msg> {
         crate::ui::efeitos::com_dica(
             efeitos::botao_icone_anim(
                 "voz-atividades",
-                icones::grade(),
+                icones::atividades(),
                 false,
                 false,
                 Some(Msg::AlternaMenuAtividades),
@@ -409,7 +446,13 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
             ..Default::default()
         }),
         column![
-            text(nome).size(14).font(negrito()),
+            ui::nome::nome_de(
+                ctx.avisos.meu_uid().unwrap_or(""),
+                nome,
+                14.0,
+                cores.texto,
+                negrito()
+            ),
             text(subtitulo)
                 .size(12)
                 .style(fraco)
@@ -419,10 +462,21 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+    let meu_uid = ctx.avisos.meu_uid().unwrap_or("");
+    let id: Element<'a, Msg> = crate::ui::loja::com_placa(
+        container(id).padding([2, 4]).into(),
+        meu_uid,
+        crate::anim::dentro_desde("rodape-eu"),
+        false,
+        cores.palco,
+    );
+    let id = iced::widget::mouse_area(id)
+        .on_enter(Msg::Hover("rodape-eu".into(), true))
+        .on_exit(Msg::Hover("rodape-eu".into(), false));
     container(
         row![
             button(id)
-                .padding([2, 4])
+                .padding(0)
                 .width(Length::Fill)
                 .style(move |_, st| button::Style {
                     background: matches!(st, button::Status::Hovered)
@@ -443,8 +497,8 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
                     } else {
                         icones::mic()
                     },
-                    ctx.mudo == Some(true),
                     false,
+                    ctx.mudo == Some(true),
                     ctx.mudo.map(|_| Msg::AlternaMudo),
                     efeitos::Efeito::Balanco,
                 ),
@@ -459,8 +513,8 @@ fn rodape_do_usuario<'a>(ctx: &ContextoColuna<'a>) -> Element<'a, Msg> {
                     } else {
                         icones::fone()
                     },
-                    ctx.surdo == Some(true),
                     false,
+                    ctx.surdo == Some(true),
                     ctx.surdo.map(|_| Msg::AlternaSurdo),
                     efeitos::Efeito::Balanco,
                 ),

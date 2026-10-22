@@ -139,6 +139,35 @@ pub fn define_hover(url: Option<String>) {
     }
 }
 
+/// Is `chave` under the mouse right now?
+pub fn em_hover(chave: &str) -> bool {
+    HOVER
+        .lock()
+        .ok()
+        .is_some_and(|h| h.as_deref() == Some(chave))
+}
+
+/// Chat image being pressed (selection look until the button is released).
+static PRESSIONADA: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn define_pressionada(chave: Option<String>) {
+    if let Ok(mut p) = PRESSIONADA.lock() {
+        *p = chave;
+    }
+}
+
+/// Takes the pressed key (the press ends on release or when the mouse leaves).
+pub fn tira_pressionada() -> Option<String> {
+    PRESSIONADA.lock().ok().and_then(|mut p| p.take())
+}
+
+pub fn pressionada(chave: &str) -> bool {
+    PRESSIONADA
+        .lock()
+        .ok()
+        .is_some_and(|p| p.as_deref() == Some(chave))
+}
+
 /// Esta URL é um GIF já decodificado?
 pub fn animada(url: &str) -> bool {
     ANIMS.read().is_ok_and(|m| m.contains_key(url))

@@ -173,13 +173,16 @@ pub fn modal_perfil_usuario<'a>(
             fundo_banner
         };
 
-    let avatar_base = container(crate::ui::avatar::avatar(
+    let escolha = crate::cosmeticos::de(&cartao.uid);
+    let avatar_base = container(crate::ui::avatar::avatar_com(
         cartao.avatar.as_deref(),
         &cartao.uid,
         &cartao.name,
         96.0,
         Some(status_str),
         c.lateral,
+        escolha.decoracao.as_ref().map(|x| x.arquivo.as_str()),
+        true,
     ))
     .padding(5)
     .style(move |_| container::Style {
@@ -216,7 +219,13 @@ pub fn modal_perfil_usuario<'a>(
 
     let mut identidade = column![
         row![
-            text(&cartao.name).size(24).font(negrito()),
+            crate::ui::nome::nome(
+                &cartao.name,
+                escolha.nome.as_ref(),
+                24.0,
+                c.texto,
+                negrito()
+            ),
             if cartao.em_chamada {
                 container(text("Na chamada").size(11).style(destaque)).padding([2, 6])
             } else {
@@ -366,7 +375,21 @@ pub fn modal_perfil_usuario<'a>(
         );
     }
 
-    let esquerda = column![topo, esquerda].spacing(0).width(380);
+    let fundo_esq = crate::ui::loja::fundo_do_cartao(&escolha);
+    let esquerda = container(crate::ui::loja::com_efeito(
+        column![topo, esquerda]
+            .spacing(0)
+            .height(Length::Fill)
+            .into(),
+        &escolha,
+    ))
+    .width(380)
+    .height(Length::Fill)
+    .clip(true)
+    .style(move |_| container::Style {
+        background: Some(fundo_esq),
+        ..Default::default()
+    });
 
     // --- Coluna da direita ----------------------------------------------------
     let mut direita = column![].spacing(12).width(Length::Fill);
@@ -489,12 +512,20 @@ pub fn modal_perfil_usuario<'a>(
         .width(Length::Fill)
         .height(Length::Fill),
     ];
-    container(stack![corpo, fechar])
+    let janela: Element<'a, Msg> = container(stack![corpo, fechar])
         .width(1000)
         .height(640)
         .clip(true)
         .style(tema::painel_lateral)
-        .into()
+        .into();
+    // A moldura vai sobre a coluna da esquerda, presa na borda de cima do
+    // banner e passando para fora da janela (por isso fora do recorte dela).
+    let area_da_esquerda: Element<'a, Msg> = space().width(380).height(640).into();
+    stack![
+        janela,
+        crate::ui::loja::com_moldura(area_da_esquerda, &escolha)
+    ]
+    .into()
 }
 
 /// Renderiza o modal de edição do próprio perfil e configurações de segurança da conta.
@@ -1098,10 +1129,16 @@ pub fn editor_perfil<'a>(
         .spacing(6)
         .into()
     };
-    let mut nome_card = text(ed.nome.clone()).size(22).font(negrito());
-    if let Some(cor_custom) = ed.cor.as_deref().and_then(parse_hex_color) {
-        nome_card = nome_card.color(cor_custom);
-    }
+    let nome_card = crate::ui::nome::nome_de(
+        ctx.uid,
+        &ed.nome,
+        22.0,
+        ed.cor
+            .as_deref()
+            .and_then(parse_hex_color)
+            .unwrap_or(c.texto),
+        negrito(),
+    );
     let cartao = container(
         column![
             topo,

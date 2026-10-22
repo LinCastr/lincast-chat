@@ -137,7 +137,19 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
         container(
             button(crate::ui::efeitos::com_lapis(
                 "pp-foto",
-                crate::ui::avatar::avatar(d.avatar, d.uid, d.nome, 72.0, Some(d.status), c.lateral),
+                crate::ui::avatar::avatar_com(
+                    d.avatar,
+                    d.uid,
+                    d.nome,
+                    72.0,
+                    Some(d.status),
+                    c.lateral,
+                    crate::cosmeticos::de(d.uid)
+                        .decoracao
+                        .as_ref()
+                        .map(|x| x.arquivo.as_str()),
+                    true
+                ),
                 36.0,
             ))
             .padding(0)
@@ -156,7 +168,15 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
         }),
     ];
     let atv = Sub::de_pessoa(None, d.atividade.as_ref(), "");
-    let mut cabeca = column![text(d.nome.to_string()).size(20).font(negrito())].spacing(2);
+    let escolha = crate::cosmeticos::de(d.uid);
+    let mut cabeca = column![crate::ui::nome::nome(
+        d.nome,
+        escolha.nome.as_ref(),
+        20.0,
+        c.texto,
+        negrito()
+    )]
+    .spacing(2);
     if let Some(u) = d.usuario {
         cabeca = cabeca.push(text(format!("@{u}")).size(13).style(fraco));
     }
@@ -208,6 +228,12 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
             faz(Msg::AbreEditarPerfil),
             c.texto_medio,
         ),
+        linha(
+            icones::brilho(),
+            "Personalizar perfil",
+            faz(Msg::AbreLoja(None)),
+            c.texto_medio,
+        ),
         bloco_presenca(presenca),
         linha(
             icones::favorito(),
@@ -238,7 +264,8 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
     ];
     let conta2 = bloco(itens_conta);
 
-    container(
+    let fundo = crate::ui::loja::fundo_do_cartao(&escolha);
+    let cartao = container(crate::ui::loja::com_efeito(
         column![
             topo,
             container(column![cabeca, conta, conta2].spacing(10)).padding(Padding {
@@ -248,11 +275,13 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
                 left: 12.0,
             }),
         ]
-        .width(LARGURA),
-    )
+        .width(LARGURA)
+        .into(),
+        &escolha,
+    ))
     .clip(true)
     .style(move |_| container::Style {
-        background: Some(Background::Color(c.lateral)),
+        background: Some(fundo),
         border: Border {
             color: c.borda,
             width: 1.0,
@@ -260,7 +289,8 @@ pub fn popup<'a>(d: DadosPopup<'a>) -> Element<'a, Msg> {
         },
         ..Default::default()
     })
-    .into()
+    .into();
+    crate::ui::loja::com_moldura(cartao, &escolha)
 }
 
 /// A lista de estados que abre à direita do popup, com o estado atual marcado.

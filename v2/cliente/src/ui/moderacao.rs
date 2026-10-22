@@ -14,6 +14,6 @@ pub fn badge_dono() -> Element<'static, Msg> {
     svg(icones::coroa())
         .width(14)
         .height(14)
-        .style(tema::icone_cor(c.destaque))
+        .style(tema::icone_cor(c.alerta))
         .into()
 }

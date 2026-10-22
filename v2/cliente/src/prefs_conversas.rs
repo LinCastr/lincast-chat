@@ -31,10 +31,20 @@ pub struct PrefsConversas {
     /// Volume dos efeitos sonoros e soundboard (0–100).
     #[serde(default = "volume_efeitos_padrao")]
     pub volume_efeitos: u8,
+    /// Volume of voices and streams in calls (0–200%). Effects and notifications keep their own.
+    #[serde(default = "cem")]
+    pub volume_chamada: u16,
+    /// Call stage height set by dragging the divider above the chat.
+    #[serde(default)]
+    pub altura_palco: Option<u32>,
 }
 
 fn verdadeiro() -> bool {
     true
+}
+
+fn cem() -> u16 {
+    100
 }
 
 fn volume_toque_padrao() -> u8 {
@@ -61,11 +71,18 @@ impl Default for PrefsConversas {
             sons_de_retorno: true,
             volume_toque: 80,
             volume_efeitos: crate::som::VOLUME_PADRAO,
+            volume_chamada: 100,
+            altura_palco: None,
         }
     }
 }
 
 impl PrefsConversas {
+    /// `volume_chamada` as a gain (1.0 = 100%).
+    pub fn volume_saida(&self) -> f32 {
+        self.volume_chamada.min(200) as f32 / 100.0
+    }
+
     pub fn carrega() -> Self {
         arquivo()
             .and_then(|p| std::fs::read_to_string(p).ok())

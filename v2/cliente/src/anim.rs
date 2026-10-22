@@ -4,7 +4,7 @@
 //! não redesenha sozinha (bateria, ver Z1 no RESUMO).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 const FADE: Duration = Duration::from_millis(140);
@@ -76,6 +76,11 @@ pub fn hover(id: &str, dentro: bool) {
             },
         );
     });
+}
+
+/// Desde quando o mouse está em cima (`None` fora).
+pub fn dentro_desde(id: &str) -> Option<Instant> {
+    com(|e| e.itens.get(id).filter(|i| i.dentro).map(|i| i.desde))
 }
 
 /// 0.0 (fora) … 1.0 (mouse em cima), com transição suave.
@@ -210,6 +215,37 @@ pub fn limpa() {
         e.eventos
             .retain(|_, (ini, dur)| agora.saturating_duration_since(*ini) < *dur);
     });
+}
+
+/// Com `LINCAST_MEDE_VIEW=1`, registra a cada 5 s quantas vezes o `view` rodou
+/// e quanto tempo levou em média (para achar travadas de animação).
+pub struct MedeView(Option<Instant>);
+
+static MEDE: LazyLock<bool> = LazyLock::new(|| std::env::var_os("LINCAST_MEDE_VIEW").is_some());
+static MEDIDAS: Mutex<(u32, Duration, Option<Instant>)> = Mutex::new((0, Duration::ZERO, None));
+
+impl MedeView {
+    pub fn agora() -> Self {
+        Self(MEDE.then(Instant::now))
+    }
+}
+
+impl Drop for MedeView {
+    fn drop(&mut self) {
+        let Some(t0) = self.0 else { return };
+        let Ok(mut m) = MEDIDAS.lock() else { return };
+        m.0 += 1;
+        m.1 += t0.elapsed();
+        let inicio = *m.2.get_or_insert(t0);
+        if inicio.elapsed() >= Duration::from_secs(5) {
+            log::info!(
+                "[desempenho] view: {} vezes em 5 s, média {:.2} ms",
+                m.0,
+                m.1.as_secs_f64() * 1000.0 / f64::from(m.0.max(1))
+            );
+            *m = (0, Duration::ZERO, Some(Instant::now()));
+        }
+    }
 }
 
 #[cfg(test)]

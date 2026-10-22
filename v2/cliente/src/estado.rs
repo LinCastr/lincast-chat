@@ -66,6 +66,10 @@ pub(crate) struct App {
     pub(crate) janela_focada: bool,
     pub(crate) modal_grupo: Option<ui::grupo::EstadoModalGrupo>,
     pub(crate) modal_status_custom: Option<ui::status_custom::EstadoStatusCustom>,
+    /// Catálogo de cosméticos aberto.
+    pub(crate) loja: Option<ui::loja::EstadoLoja>,
+    /// Janela do estilo do nome / tema do perfil aberta.
+    pub(crate) estilo_nome: Option<ui::estilo_nome::EdicaoEstilo>,
     pub(crate) presenca_aberta: bool,
     /// Quando fechar o submenu de presença (tolerância para o mouse atravessar).
     pub(crate) presenca_fecha_em: Option<std::time::Instant>,
@@ -245,6 +249,12 @@ pub(crate) struct SalaAberta {
     /// Texto das mensagens em forma selecionável (`ui::selecionavel`), por
     /// `id#trecho`. Mantido por `sincroniza_selecionaveis`.
     pub(crate) selecionaveis: HashMap<String, crate::ui::selecionavel::TextoSelecionavel>,
+    /// Call stage height chosen by dragging the divider (None = natural size).
+    pub(crate) altura_palco: Option<f32>,
+    /// Last measured stage height (start point of a drag).
+    pub(crate) altura_palco_medida: f32,
+    /// Drag in progress: cursor y and stage height when it started.
+    pub(crate) arrasto_palco: Option<(f32, f32)>,
     pub(crate) rascunho: String,
     pub(crate) na_chamada: bool,
     pub(crate) mudo: bool,
@@ -345,6 +355,8 @@ pub(crate) struct PreviaCamera {
     pub(crate) cameras: Vec<captura_camera::DispositivoCamera>,
     pub(crate) indice_selecionado: usize,
     pub(crate) imagem: Option<image::Handle>,
+    /// See `ui::video::marca_desenho`.
+    pub(crate) desenhado: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) struct Video {
@@ -353,10 +365,17 @@ pub(crate) struct Video {
     pub(crate) largura: u32,
     pub(crate) altura: u32,
     pub(crate) imagem: image::Handle,
-    /// Quadro anterior, desenhado por baixo do atual: o iced sobe imagem
-    /// grande (> 2 MB, ex. 1080p) para a GPU em segundo plano e não desenha
-    /// nada até terminar; sem isto a transmissão pisca a cada quadro.
-    pub(crate) anterior: Option<image::Handle>,
+    /// Keeps `imagem` on the GPU. iced uploads large images (> 2 MB, e.g. 1080p)
+    /// in the background and draws nothing until that ends; a new frame only
+    /// replaces the shown one once `image::allocate` says it is uploaded
+    /// (drawing the previous frame underneath failed at high fps: both could
+    /// still be uploading, and the stream blinked).
+    pub(crate) alocacao: Option<image::Allocation>,
+    /// A frame is being uploaded since then: newer ones are dropped until it is
+    /// ready (or for at most 1 s, in case the answer never comes).
+    pub(crate) subindo: Option<std::time::Instant>,
+    /// See `ui::video::marca_desenho`.
+    pub(crate) desenhado: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +469,8 @@ pub(crate) enum Msg {
     AjustaVolumeTela(String, f32),
     AlternaMuteTela(String),
     PedeTela,
+    /// Opens the share window to change the running stream.
+    ConfiguraTransmissao,
     AppsTocando(Result<Vec<AppTocando>, String>),
     MudaPerfilTela(captura_tela::PerfilTela),
     AlternaAutoBitrate(bool),
@@ -599,6 +620,24 @@ pub(crate) enum Msg {
     AbreMenuConversa(String),
     /// O mouse entrou/saiu de um GIF animado (para animar só o que está sob o cursor).
     HoverGif(Option<String>),
+    /// Mouse button down on a chat image (key from `gifanim::chave_mensagem`).
+    PressionaImagem(String),
+    /// A video frame finished uploading to the GPU (see `Video::alocacao`).
+    QuadroPronto {
+        dono: String,
+        de_tela: bool,
+        largura: u32,
+        altura: u32,
+        imagem: iced::widget::image::Handle,
+        alocacao: Option<iced::widget::image::Allocation>,
+        inicio: std::time::Instant,
+    },
+    /// Stage size measured (sensor).
+    PalcoMedido(f32),
+    /// Mouse down on the stage/chat divider.
+    ArrastaPalco,
+    /// Double click on the divider: back to the natural size.
+    RestauraPalco,
     JogosBuscaInput(String),
     JogosBusca,
     JogosResultado(Result<Vec<api::JogoLista>, String>),
@@ -609,10 +648,28 @@ pub(crate) enum Msg {
     PedeApagarGrupo(String),
     AbreEditarPerfil,
     TickGif,
+    // Cosméticos de perfil
+    CatalogoCosmeticos(Result<Vec<crate::cosmeticos::Item>, String>),
+    PessoasCosmeticos(
+        Result<std::collections::HashMap<String, crate::cosmeticos::Escolha>, String>,
+    ),
+    /// Uma imagem de cosmético chegou (já guardada): só redesenha.
+    CosmeticoPronto,
+    TickCosmeticos,
+    AbreLoja(Option<crate::cosmeticos::Tipo>),
+    FechaLoja,
+    Loja(ui::loja::LojaMsg),
+    AbreEstiloNome,
+    FechaEstiloNome,
+    EstiloNome(ui::estilo_nome::EstiloMsg),
+    AplicaEstiloNome,
+    CosmeticosSalvos(Result<Option<crate::cosmeticos::Escolha>, String>),
     AlternaReduzAnimacoes,
     AlternaGifSoHover,
     /// Ação de seleção (clique, arrasto, Ctrl+A…) no texto de uma mensagem.
     SelecaoTexto(String, iced::widget::text_editor::Action),
+    /// A short selectable text was clicked: clear the message text selections.
+    LimpaSelecoes,
     AbreTentativasWordle {
         dia: String,
         uid: String,
@@ -629,6 +686,11 @@ pub(crate) enum Msg {
     MencionaPessoa(String),
     /// Toca de novo para alguém que está fora da chamada.
     TocaPara {
+        conversa: String,
+        uid: String,
+    },
+    /// Stops ringing someone who has not joined yet.
+    ParaDeTocar {
         conversa: String,
         uid: String,
     },
@@ -807,6 +869,8 @@ pub(crate) enum Msg {
     WordleDevTrocou(Result<(), String>),
     DefineVolumeToque(u8),
     DefineVolumeEfeitos(u8),
+    /// Volume of voices and streams in calls, 0–200%.
+    DefineVolumeChamada(u16),
     TestaToque,
     Nenhum,
 }

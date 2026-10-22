@@ -323,6 +323,8 @@ pub struct ImagemAnexo {
 
 #[derive(Debug, Clone)]
 pub enum Comando {
+    /// App-wide playout volume (1.0 = 100%, up to 2.0).
+    VolumeSaida(f32),
     Chat {
         texto: String,
         imagem: Option<ImagemAnexo>,
@@ -363,6 +365,12 @@ pub enum Comando {
         auto_bitrate: bool,
     },
     PararTela,
+    /// Changes the running stream (quality, fps, sound) without stopping it.
+    AjustaTela {
+        apps: Vec<String>,
+        perfil: captura_tela::PerfilTela,
+        auto_bitrate: bool,
+    },
     PreviaCamera(Option<usize>),
     CancelaPreviaCamera,
     IniciarCamera {
@@ -616,9 +624,13 @@ struct Tela {
     captura: captura_tela::Captura,
     video: RtcVideoTrack,
     audio: Option<RtcAudioTrack>,
+    /// Source of `audio`: a new sound choice feeds it from a new helper process.
+    fonte_audio: Option<NativeAudioSource>,
+    /// Apps whose sound goes with the stream (`*` = whole PC).
+    apps: Vec<String>,
     perfil: captura_tela::PerfilTela,
     auto_bitrate: bool,
-    _filho: Option<tokio::process::Child>,
+    filho: Option<tokio::process::Child>,
 }
 
 struct Camera {
@@ -628,6 +640,9 @@ struct Camera {
 
 struct Previa {
     parar: std::sync::mpsc::Sender<()>,
+    /// The preview thread. It holds the V4L2 device until it returns, so the
+    /// next capture of the same camera must wait for it (EBUSY otherwise).
+    fio: std::thread::JoinHandle<()>,
 }
 
 struct Ator {
@@ -645,6 +660,8 @@ struct Ator {
     na_chamada: bool,
     mudo: bool,
     surdo: bool,
+    /// App-wide playout gain for voices and streams (1.0 = 100%, up to 2.0).
+    volume_saida: f32,
     mic: Option<RtcAudioTrack>,
     /// `concord-audio microfone` quando a supressão de ruído está ligada.
     mic_filho: Option<tokio::process::Child>,
@@ -820,6 +837,7 @@ async fn roda_interno(
         na_chamada: false,
         mudo: false,
         surdo: false,
+        volume_saida: crate::prefs_conversas::PrefsConversas::carrega().volume_saida(),
         mic: None,
         mic_filho: None,
         id_voz: format!("lincast-voz-{}", aleatorio()),
@@ -1157,6 +1175,27 @@ impl Ator {
         let _ = self.ws.send(v);
     }
 
+    /// Applies the person's voice/stream volume times the app output volume to
+    /// their received tracks. 0 disables the track; above that the gain goes to
+    /// the libwebrtc playout (`set_volume`, which accepts up to 10×).
+    fn aplica_volume(&self, id: &str) {
+        let (Some(p), Some(par)) = (self.pessoas.get(id), self.pares.get(id)) else {
+            return;
+        };
+        for (trilhas, vol) in [
+            (&par.trilhas_voz, p.volume),
+            (&par.trilhas_tela, p.volume_tela),
+        ] {
+            let ganho = (vol * self.volume_saida) as f64;
+            for trilha in trilhas {
+                trilha.set_enabled(ganho > 0.0);
+                if ganho > 0.0 {
+                    trilha.set_volume(ganho);
+                }
+            }
+        }
+    }
+
     async fn publica_pessoas(&mut self) {
         let lista: Vec<Pessoa> = self.pessoas.values().cloned().collect();
         self.emite(Evento::Pessoas(lista)).await;
@@ -1197,7 +1236,7 @@ impl Ator {
     }
 
     fn encerra_midia(&mut self) {
-        self.cancela_previa_camera();
+        let _ = self.cancela_previa_camera();
         for (_, p) in self.pares.drain() {
             p.pc.close();
         }
@@ -1607,73 +1646,63 @@ impl Ator {
                 auto_bitrate,
             } => self.compartilha_tela(apps, perfil, auto_bitrate).await?,
             Comando::PararTela => self.para_tela().await,
+            Comando::AjustaTela {
+                apps,
+                perfil,
+                auto_bitrate,
+            } => self.ajusta_tela(apps, perfil, auto_bitrate).await,
             Comando::PreviaCamera(opt_idx) => self.inicia_previa_camera(opt_idx),
-            Comando::CancelaPreviaCamera => self.cancela_previa_camera(),
-            Comando::IniciarCamera { indice } => self.inicia_camera(indice).await?,
+            Comando::CancelaPreviaCamera => {
+                let _ = self.cancela_previa_camera();
+            }
+            Comando::IniciarCamera { indice } => {
+                if let Err(e) = self.inicia_camera(indice).await {
+                    log::warn!("{e:#}");
+                    self.emite(Evento::Aviso(format!("{e:#}"))).await;
+                }
+            }
             Comando::PararCamera => self.para_camera().await,
+            Comando::VolumeSaida(v) => {
+                self.volume_saida = v.clamp(0.0, 2.0);
+                let ids: Vec<String> = self.pares.keys().cloned().collect();
+                for id in ids {
+                    self.aplica_volume(&id);
+                }
+            }
             Comando::AjustaVolume {
                 id,
                 volume,
                 de_tela,
             } => {
-                let volume = volume.clamp(0.0, 2.0);
+                let volume = volume.clamp(0.0, volumes::MAXIMO);
                 if let Some(p) = self.pessoas.get_mut(&id) {
                     if de_tela {
                         p.volume_tela = volume;
-                        volumes::salvar(p.uid.as_deref(), &p.nome, true, volume);
-                        if let Some(par) = self.pares.get(&id) {
-                            for trilha in &par.trilhas_tela {
-                                trilha.set_enabled(volume > 0.0);
-                            }
-                        }
                     } else {
                         p.volume = volume;
-                        volumes::salvar(p.uid.as_deref(), &p.nome, false, volume);
-                        if let Some(par) = self.pares.get(&id) {
-                            for trilha in &par.trilhas_voz {
-                                trilha.set_enabled(volume > 0.0);
-                            }
-                        }
                     }
+                    volumes::salvar(p.uid.as_deref(), &p.nome, de_tela, volume);
                 }
+                self.aplica_volume(&id);
                 self.publica_pessoas().await;
             }
             Comando::AlternaMute { id, de_tela } => {
                 if let Some(p) = self.pessoas.get_mut(&id) {
-                    if de_tela {
-                        if p.volume_tela > 0.0 {
-                            p.volume_tela_anterior = Some(p.volume_tela);
-                            p.volume_tela = 0.0;
-                        } else {
-                            p.volume_tela = p.volume_tela_anterior.unwrap_or(1.0).max(0.05);
-                        }
-                        let vol = p.volume_tela;
-                        let uid = p.uid.clone();
-                        let nome = p.nome.clone();
-                        volumes::salvar(uid.as_deref(), &nome, true, vol);
-                        if let Some(par) = self.pares.get(&id) {
-                            for trilha in &par.trilhas_tela {
-                                trilha.set_enabled(vol > 0.0);
-                            }
-                        }
+                    let (vol, anterior) = if de_tela {
+                        (&mut p.volume_tela, &mut p.volume_tela_anterior)
                     } else {
-                        if p.volume > 0.0 {
-                            p.volume_anterior = Some(p.volume);
-                            p.volume = 0.0;
-                        } else {
-                            p.volume = p.volume_anterior.unwrap_or(1.0).max(0.05);
-                        }
-                        let vol = p.volume;
-                        let uid = p.uid.clone();
-                        let nome = p.nome.clone();
-                        volumes::salvar(uid.as_deref(), &nome, false, vol);
-                        if let Some(par) = self.pares.get(&id) {
-                            for trilha in &par.trilhas_voz {
-                                trilha.set_enabled(vol > 0.0);
-                            }
-                        }
+                        (&mut p.volume, &mut p.volume_anterior)
+                    };
+                    if *vol > 0.0 {
+                        *anterior = Some(*vol);
+                        *vol = 0.0;
+                    } else {
+                        *vol = anterior.unwrap_or(1.0).max(0.05);
                     }
+                    let vol = *vol;
+                    volumes::salvar(p.uid.as_deref(), &p.nome, de_tela, vol);
                 }
+                self.aplica_volume(&id);
                 self.publica_pessoas().await;
             }
             Comando::PttConfigurado { ativo } => {
@@ -1988,15 +2017,18 @@ impl Ator {
     }
 
     fn inicia_previa_camera(&mut self, indice: Option<usize>) {
-        self.cancela_previa_camera();
+        let anterior = self.cancela_previa_camera();
         let indice = indice.unwrap_or(0);
         let (tx_parar, rx_parar) = std::sync::mpsc::channel();
-        let saida = self.saida.clone();
+        let mut saida = self.saida.clone();
 
-        std::thread::Builder::new()
+        let fio = std::thread::Builder::new()
             .name("previa-cam".into())
             .spawn(move || {
                 use v4l::video::Capture;
+                if let Some(fio) = anterior {
+                    let _ = fio.join();
+                }
                 let dev = match v4l::Device::new(indice) {
                     Ok(d) => d,
                     Err(e) => {
@@ -2064,29 +2096,41 @@ impl Ator {
                             altura: h,
                             rgba: rgba.clone(),
                         };
-                        let mut s = saida.clone();
-                        let _ = s.try_send(Evento::QuadroPrevia(q));
+                        // One sender for the whole preview: every clone of a futures
+                        // Sender gets its own guaranteed slot, so cloning per frame
+                        // made the channel unbounded.
+                        let _ = saida.try_send(Evento::QuadroPrevia(q));
                     }
                 }
             })
             .expect("thread previa");
 
-        self.previa = Some(Previa { parar: tx_parar });
+        self.previa = Some(Previa {
+            parar: tx_parar,
+            fio,
+        });
     }
 
-    fn cancela_previa_camera(&mut self) {
-        if let Some(prev) = self.previa.take() {
-            let _ = prev.parar.send(());
-        }
+    /// Stops the preview and returns its thread, to be joined before opening
+    /// the camera again.
+    fn cancela_previa_camera(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        let prev = self.previa.take()?;
+        let _ = prev.parar.send(());
+        Some(prev.fio)
     }
 
     async fn inicia_camera(&mut self, indice: usize) -> Result<()> {
-        self.cancela_previa_camera();
+        let previa = self.cancela_previa_camera();
         if self.camera.is_some() || !self.na_chamada {
             return Ok(());
         }
         let (tx_quadro, mut rx_quadro) = tokio::sync::mpsc::unbounded_channel();
         let captura = tokio::task::spawn_blocking(move || {
+            // The preview still had the device open: opening it before the
+            // preview thread returns failed with EBUSY and the camera never started.
+            if let Some(fio) = previa {
+                let _ = fio.join();
+            }
             captura_camera::inicia(indice, 640, 480, Some(tx_quadro))
         })
         .await?
@@ -2142,12 +2186,14 @@ impl Ator {
             }
         }
         c.captura.para();
+        // State first: the UI drops camera frames of whoever has no camera on,
+        // so frames still queued cannot bring the box back after it closes.
+        self.publica_meu_estado().await;
         self.emite(Evento::VideoFechou {
             dono: self.meu_id.clone(),
             de_tela: false,
         })
         .await;
-        self.publica_meu_estado().await;
     }
 
     async fn compartilha_tela(
@@ -2166,18 +2212,7 @@ impl Ator {
         let mut perfil = perfil;
         let x11 =
             std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some();
-        let (tx_previa, mut rx_previa) = tokio::sync::mpsc::unbounded_channel();
-        self.geracao_tela += 1;
-        let geracao = self.geracao_tela;
-        let tx = self.tx.clone();
-        let ao_terminar: Box<dyn FnOnce() + Send> = Box::new(move || {
-            let _ = tx.send(Interno::TelaAcabou(geracao));
-        });
-        let captura = tokio::task::spawn_blocking(move || {
-            captura_tela::inicia(fps, true, x11, Some(tx_previa), Some(ao_terminar))
-        })
-        .await?
-        .ok_or_else(|| anyhow!("a captura de tela não começou (cancelada?)"))?;
+        let (geracao, captura) = self.inicia_captura_tela(fps, x11).await?;
         // Agora se sabe a altura do que está sendo capturado: o teto de
         // resolução e o de bitrate dependem dela.
         perfil.fonte_altura = captura.resolucao.height;
@@ -2185,18 +2220,22 @@ impl Ator {
             .fabrica
             .create_video_track("concord-tela-video", captura.fonte.clone());
 
-        let (audio, filho) = if apps.is_empty() {
-            (None, None)
+        let (audio, fonte_audio, filho) = if apps.is_empty() {
+            (None, None, None)
         } else {
-            match inicia_audio_de_apps(&apps) {
+            match inicia_audio_de_apps(&apps, None) {
                 Ok((fonte, filho)) => (
-                    Some(self.fabrica.create_audio_track("concord-tela-audio", fonte)),
+                    Some(
+                        self.fabrica
+                            .create_audio_track("concord-tela-audio", fonte.clone()),
+                    ),
+                    Some(fonte),
                     Some(filho),
                 ),
                 Err(e) => {
                     self.emite(Evento::Aviso(format!("Transmitindo sem som: {e:#}")))
                         .await;
-                    (None, None)
+                    (None, None, None)
                 }
             }
         };
@@ -2221,6 +2260,40 @@ impl Ator {
                 par.remetentes_tela.push(s);
             }
         }
+        self.tela = Some(Tela {
+            geracao,
+            captura,
+            video,
+            audio,
+            fonte_audio,
+            apps,
+            perfil,
+            auto_bitrate,
+            filho,
+        });
+        self.publica_meu_estado().await;
+        Ok(())
+    }
+
+    /// Starts a screen capture whose own preview also goes to the UI. The
+    /// portal dialog blocks until the person picks: off the actor.
+    async fn inicia_captura_tela(
+        &mut self,
+        fps: u32,
+        x11: bool,
+    ) -> Result<(u64, captura_tela::Captura)> {
+        let (tx_previa, mut rx_previa) = tokio::sync::mpsc::unbounded_channel();
+        self.geracao_tela += 1;
+        let geracao = self.geracao_tela;
+        let tx = self.tx.clone();
+        let ao_terminar: Box<dyn FnOnce() + Send> = Box::new(move || {
+            let _ = tx.send(Interno::TelaAcabou(geracao));
+        });
+        let captura = tokio::task::spawn_blocking(move || {
+            captura_tela::inicia(fps, true, x11, Some(tx_previa), Some(ao_terminar))
+        })
+        .await?
+        .ok_or_else(|| anyhow!("a captura de tela não começou (cancelada?)"))?;
         // A própria transmissão também aparece para quem transmite.
         let dono = self.meu_id.clone();
         let mut saida = self.saida.clone();
@@ -2242,17 +2315,118 @@ impl Ator {
                 }
             }
         });
-        self.tela = Some(Tela {
-            geracao,
-            captura,
-            video,
-            audio,
-            perfil,
-            auto_bitrate,
-            _filho: filho,
-        });
-        self.publica_meu_estado().await;
-        Ok(())
+        Ok((geracao, captura))
+    }
+
+    /// New quality, fps or sound for the running stream. Viewers keep
+    /// watching: tracks are swapped on the same senders, nothing is
+    /// renegotiated except adding sound to a stream that had none.
+    async fn ajusta_tela(
+        &mut self,
+        apps: Vec<String>,
+        mut perfil: captura_tela::PerfilTela,
+        auto_bitrate: bool,
+    ) {
+        let Some(t) = self.tela.as_ref() else { return };
+        let fps_antes = t.perfil.fps();
+        perfil.fonte_altura = t.perfil.fonte_altura;
+
+        // More fps than the capture delivers needs a new capture; the encoder
+        // limit alone handles less.
+        if perfil.fps() > fps_antes {
+            let x11 = std::env::var_os("WAYLAND_DISPLAY").is_none()
+                && std::env::var_os("DISPLAY").is_some();
+            match self.inicia_captura_tela(perfil.fps(), x11).await {
+                Ok((geracao, captura)) => {
+                    perfil.fonte_altura = captura.resolucao.height;
+                    let video = self
+                        .fabrica
+                        .create_video_track("concord-tela-video", captura.fonte.clone());
+                    for par in self.pares.values() {
+                        for s in &par.remetentes_tela {
+                            if matches!(s.track(), Some(MediaStreamTrack::Video(_))) {
+                                let _ = s.set_track(Some(MediaStreamTrack::Video(video.clone())));
+                            }
+                        }
+                    }
+                    if let Some(t) = self.tela.as_mut() {
+                        let antiga = std::mem::replace(&mut t.captura, captura);
+                        antiga.para();
+                        t.geracao = geracao;
+                        t.video = video;
+                    }
+                    log::info!("[tela] captura refeita a {} fps", perfil.fps());
+                }
+                Err(e) => {
+                    log::warn!("[tela] não deu para subir o fps: {e:#}");
+                    self.emite(Evento::Aviso(format!(
+                        "Não deu para mudar para {} fps: {e:#}",
+                        perfil.fps()
+                    )))
+                    .await;
+                    perfil.fps = fps_antes;
+                }
+            }
+        }
+
+        if self.tela.as_ref().is_some_and(|t| t.apps != apps) {
+            self.troca_som_da_tela(apps).await;
+        }
+
+        let Some(t) = self.tela.as_mut() else { return };
+        t.perfil = perfil;
+        t.auto_bitrate = auto_bitrate;
+        for par in self.pares.values_mut() {
+            if !auto_bitrate {
+                par.escada_bitrate.reinicia();
+            }
+            for s in &par.remetentes_tela {
+                configura_remetente_tela(s, perfil, par.escada_bitrate.degrau, par.reducao_fps);
+            }
+        }
+        log::info!(
+            "[tela] transmissão ajustada: {:?}, {} fps, auto={auto_bitrate}",
+            perfil.resolucao,
+            perfil.fps()
+        );
+    }
+
+    /// Feeds the stream's sound from a new helper process with the new app
+    /// choice. Empty choice: the helper stops and the track goes silent.
+    async fn troca_som_da_tela(&mut self, apps: Vec<String>) {
+        let Some(t) = self.tela.as_mut() else { return };
+        // The old helper has to be gone before the new one writes to the same
+        // source: two writers at once trip libwebrtc's race checker.
+        if let Some(mut f) = t.filho.take() {
+            let _ = f.kill().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        t.apps = apps.clone();
+        if apps.is_empty() {
+            return;
+        }
+        match inicia_audio_de_apps(&apps, t.fonte_audio.clone()) {
+            Ok((fonte, filho)) => {
+                t.filho = Some(filho);
+                if t.audio.is_none() {
+                    let audio = self
+                        .fabrica
+                        .create_audio_track("concord-tela-audio", fonte.clone());
+                    let ids = [self.id_tela.clone()];
+                    for par in self.pares.values_mut() {
+                        if let Ok(s) = adiciona_audio_de_tela(&par.pc, &audio, &ids) {
+                            par.remetentes_tela.push(s);
+                        }
+                    }
+                    t.audio = Some(audio);
+                    t.fonte_audio = Some(fonte);
+                }
+            }
+            Err(e) => {
+                self.emite(Evento::Aviso(format!("Transmitindo sem som: {e:#}")))
+                    .await;
+            }
+        }
     }
 
     async fn para_tela(&mut self) {
@@ -2855,6 +3029,8 @@ impl Ator {
                 if let Some(p) = self.pessoas.get_mut(&de) {
                     p.com_camera = ativa;
                 }
+                // People first (see `para_camera`), then close the box.
+                self.publica_pessoas().await;
                 if !ativa {
                     self.emite(Evento::VideoFechou {
                         dono: de,
@@ -2862,7 +3038,6 @@ impl Ator {
                     })
                     .await;
                 }
-                self.publica_pessoas().await;
             }
             "sistema" => {
                 if let Some(m) = mensagem_de(&msg) {
@@ -3254,12 +3429,28 @@ impl Ator {
                 let mut saida = self.saida.clone();
                 tokio::spawn(async move {
                     let mut fluxo = NativeVideoStream::new(video);
-                    // A interface não precisa de mais que ~30 quadros/s, e cada quadro
-                    // em RGBA é grande: converter só o que vai ser mostrado.
+                    // Each RGBA frame is large: convert only what can be shown. The cap
+                    // was 33 ms (30 fps), which made 60 fps streams look like 30.
                     let mut ultimo = std::time::Instant::now() - Duration::from_secs(1);
                     let mut primeiro_quadro = false;
+                    // Frame counts for the log: decoded by libwebrtc, sent to the UI.
+                    let (mut recebidos, mut enviados) = (0u32, 0u32);
+                    let mut desde = std::time::Instant::now();
                     while let Some(q) = fluxo.next().await {
-                        if ultimo.elapsed() < Duration::from_millis(33) {
+                        recebidos += 1;
+                        if desde.elapsed() >= Duration::from_secs(30) {
+                            let s = desde.elapsed().as_secs_f32();
+                            log::info!(
+                                "[{dono}] vídeo (de_tela={de_tela}): {:.0} fps recebidos, {:.0} para a tela, {:.0} exibidos (todos), subida p/ GPU {}",
+                                recebidos as f32 / s,
+                                enviados as f32 / s,
+                                crate::ui::video::exibidos_desde_ultima_leitura() as f32 / s,
+                                crate::ui::video::subida_desde_ultima_leitura(),
+                            );
+                            (recebidos, enviados) = (0, 0);
+                            desde = std::time::Instant::now();
+                        }
+                        if ultimo.elapsed() < Duration::from_millis(14) {
                             continue;
                         }
                         ultimo = std::time::Instant::now();
@@ -3290,24 +3481,16 @@ impl Ator {
                         };
                         // try_send: if the UI is busy the frame is dropped. Awaiting here
                         // let the unbounded capture queue grow until the system ran out of memory.
-                        if let Err(e) = saida.try_send(Evento::Quadro(quadro))
-                            && e.is_disconnected()
-                        {
-                            break;
+                        match saida.try_send(Evento::Quadro(quadro)) {
+                            Ok(()) => enviados += 1,
+                            Err(e) if e.is_disconnected() => break,
+                            Err(_) => {}
                         }
                     }
                 });
             }
             MediaStreamTrack::Audio(audio) => {
                 if let Some(par) = self.pares.get_mut(id) {
-                    if let Some(p) = self.pessoas.get(id) {
-                        let ativo = if de_tela {
-                            p.volume_tela > 0.0
-                        } else {
-                            p.volume > 0.0
-                        };
-                        audio.set_enabled(ativo);
-                    }
                     if de_tela {
                         par.trilhas_tela.push(audio);
                     } else {
@@ -3360,6 +3543,7 @@ impl Ator {
                         par.monitores_audio.push(monitor);
                     }
                 }
+                self.aplica_volume(id);
             }
         }
     }
@@ -3544,7 +3728,11 @@ fn inicia_microfone_rnnoise(
     Ok((fonte, filho))
 }
 
-fn inicia_audio_de_apps(apps: &[String]) -> Result<(NativeAudioSource, tokio::process::Child)> {
+/// `fonte`: keep feeding the source of a stream that is already going.
+fn inicia_audio_de_apps(
+    apps: &[String],
+    fonte: Option<NativeAudioSource>,
+) -> Result<(NativeAudioSource, tokio::process::Child)> {
     let Some(bin) = crate::portal_tela::acha_concord_audio() else {
         bail!("o som da transmissão precisa do concord-audio, que não foi achado: reinstale o app");
     };
@@ -3566,16 +3754,18 @@ fn inicia_audio_de_apps(apps: &[String]) -> Result<(NativeAudioSource, tokio::pr
         .spawn()?;
     let mut stdout = filho.stdout.take().context("stdout do concord-audio")?;
     // Áudio de tela com os processamentos de voz DESLIGADOS (destroem música).
-    let fonte = NativeAudioSource::new(
-        AudioSourceOptions {
-            echo_cancellation: false,
-            noise_suppression: false,
-            auto_gain_control: false,
-        },
-        TAXA,
-        CANAIS,
-        0,
-    );
+    let fonte = fonte.unwrap_or_else(|| {
+        NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            TAXA,
+            CANAIS,
+            0,
+        )
+    });
     let destino = fonte.clone();
     tokio::spawn(async move {
         let mut bytes = vec![0u8; (TAXA / 100 * CANAIS * 2) as usize];
@@ -4316,5 +4506,143 @@ mod tests {
         println!("gerador: {:.1} fps", gerador.join().unwrap());
         a.close();
         b.close();
+    }
+
+    /// Playout gain of a received track (`RtcAudioTrack::set_volume`, patched
+    /// into `vendor/`): A sends a 440 Hz tone, B plays it, and the RMS recorded
+    /// from the playout sink must follow the gain. Run with a null sink:
+    /// `pactl load-module module-null-sink sink_name=lincast_teste`, then
+    /// `PULSE_SINK=lincast_teste cargo test -p lincast-chat volume_de_quem_recebe -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn volume_de_quem_recebe() {
+        let sink = std::env::var("PULSE_SINK").expect("PULSE_SINK (null sink)");
+        let fabrica = PeerConnectionFactory::default();
+        assert!(fabrica.acquire_platform_adm(), "sem ADM da plataforma");
+        fabrica.set_adm_recording_enabled(false);
+        fabrica.set_adm_playout_enabled(true);
+        let a = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc a");
+        let b = fabrica
+            .create_peer_connection(RtcConfiguration::default())
+            .expect("pc b");
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel();
+        a.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_a.send(c);
+        })));
+        b.on_ice_candidate(Some(Box::new(move |c| {
+            let _ = tx_b.send(c);
+        })));
+        let (a2, b2) = (a.clone(), b.clone());
+        tokio::spawn(async move {
+            while let Some(c) = rx_a.recv().await {
+                let _ = b2.add_ice_candidate(c).await;
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(c) = rx_b.recv().await {
+                let _ = a2.add_ice_candidate(c).await;
+            }
+        });
+        let (tx_trilha, mut rx_trilha) = tokio::sync::mpsc::unbounded_channel();
+        b.on_track(Some(Box::new(move |t| {
+            if let MediaStreamTrack::Audio(au) = t.track {
+                let _ = tx_trilha.send(au);
+            }
+        })));
+        let fonte = fonte_de_apps_teste();
+        let trilha = fabrica.create_audio_track("tom", fonte.clone());
+        a.add_track(MediaStreamTrack::Audio(trilha), &["tom".to_string()])
+            .expect("tom");
+        negocia_teste(&a, &b).await;
+        let recebida = tokio::time::timeout(Duration::from_secs(10), rx_trilha.recv())
+            .await
+            .expect("sem trilha")
+            .expect("canal");
+
+        let gerador = tokio::spawn(async move {
+            let n = (TAXA / 100) as usize;
+            let mut fase = 0f32;
+            let mut ritmo = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                ritmo.tick().await;
+                let mut dados = Vec::with_capacity(n * CANAIS as usize);
+                for _ in 0..n {
+                    let v = (fase.sin() * 2000.0) as i16;
+                    fase += 2.0 * std::f32::consts::PI * 440.0 / TAXA as f32;
+                    for _ in 0..CANAIS {
+                        dados.push(v);
+                    }
+                }
+                let q = AudioFrame {
+                    data: dados.into(),
+                    sample_rate: TAXA,
+                    num_channels: CANAIS,
+                    samples_per_channel: n as u32,
+                };
+                let _ = fonte.capture_frame(&q).await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut medidas = Vec::new();
+        for ganho in [1.0f64, 3.0, 0.3, 4.0] {
+            recebida.set_volume(ganho);
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let saida = std::process::Command::new("timeout")
+                .args(["2", "pw-record", "--target", &sink, "--rate", "48000"])
+                .args(["--channels", "1", "--format", "s16"])
+                .args(["-P", "{ stream.capture.sink=true }", "-"])
+                .output()
+                .expect("parec");
+            let amostras: Vec<f64> = saida
+                .stdout
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b) as f64)
+                .collect();
+            let rms =
+                (amostras.iter().map(|v| v * v).sum::<f64>() / amostras.len().max(1) as f64).sqrt();
+            println!("ganho {ganho}: rms {rms:.0} ({} amostras)", amostras.len());
+            medidas.push(rms);
+        }
+        gerador.abort();
+        a.close();
+        b.close();
+        assert!(medidas[0] > 50.0, "nada tocou");
+        assert!(medidas[1] > medidas[0] * 2.0, "3x não aumentou");
+        assert!(medidas[2] < medidas[0] * 0.5, "0.3x não diminuiu");
+    }
+
+    /// Preview -> "turn camera on" with a real camera (2026-10-21): the preview
+    /// thread still held the device and `captura_camera::inicia` failed with
+    /// EBUSY. `SEM_ESPERA=1` skips the join (the old behaviour).
+    /// `cargo test -p lincast-chat previa_depois_camera -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn previa_depois_camera() {
+        use v4l::io::traits::CaptureStream;
+        let (tx_parar, rx_parar) = std::sync::mpsc::channel::<()>();
+        let fio = std::thread::spawn(move || {
+            let dev = v4l::Device::new(0).expect("câmera 0");
+            let mut stream =
+                v4l::io::mmap::Stream::with_buffers(&dev, v4l::buffer::Type::VideoCapture, 2)
+                    .expect("stream da prévia");
+            while rx_parar.try_recv().is_err() {
+                let _ = stream.next();
+            }
+        });
+        std::thread::sleep(Duration::from_millis(800));
+        let _ = tx_parar.send(());
+        if std::env::var_os("SEM_ESPERA").is_none() {
+            fio.join().unwrap();
+        }
+        let r = captura_camera::inicia(0, 640, 480, None);
+        println!("câmera: {}", if r.is_ok() { "ok" } else { "falhou" });
+        let c = r.expect("câmera não abriu");
+        c.para();
     }
 }

@@ -16,6 +16,7 @@ mod avatar;
 mod avisos;
 mod captura_camera;
 mod captura_tela;
+mod cosmeticos;
 mod desempenho;
 mod dispositivos;
 mod eco;
@@ -79,10 +80,14 @@ fn main() -> iced::Result {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tema::carrega_tema_salvo();
 
-    iced::application(App::novo, App::update, App::view)
+    let mut app = iced::application(App::novo, App::update, App::view)
         .title(App::titulo)
-        .font(include_bytes!("../assets/fonts/Figtree.ttf").as_slice())
-        .default_font(tema::FONTE)
+        .font(include_bytes!("../assets/fonts/Figtree.ttf").as_slice());
+    // Fontes do "Estilo do nome exibido".
+    for f in ui::nome::ARQUIVOS {
+        app = app.font(f);
+    }
+    app.default_font(tema::FONTE)
         .subscription(App::subscription)
         .theme(|_: &App| tema::tema_iced())
         .window(janela())

@@ -23,7 +23,7 @@ pub fn controle_volume_participante<'a>(p: &'a Pessoa) -> Element<'a, Msg> {
     .style(tema::botao_secundario)
     .on_press(Msg::AlternaMute(id.clone()));
 
-    let barra = slider(0.0..=2.0, p.volume, move |v| {
+    let barra = slider(0.0..=crate::volumes::MAXIMO, p.volume, move |v| {
         Msg::AjustaVolume(id.clone(), v)
     })
     .step(0.05_f32)
@@ -71,7 +71,7 @@ pub fn controle_volume_video<'a>(
         Msg::AlternaMute(id_mute)
     });
 
-    let barra = slider(0.0..=2.0, vol, move |val| {
+    let barra = slider(0.0..=crate::volumes::MAXIMO, vol, move |val| {
         if de_tela {
             Msg::AjustaVolumeTela(id_vol.clone(), val)
         } else {

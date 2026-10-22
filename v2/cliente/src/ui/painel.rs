@@ -177,6 +177,9 @@ fn linha_de_membro<'a>(
     let c = tema::cores();
     let st = status_de(m, avisos);
     let offline = st == "offline";
+    // Offline bem apagado, como no Discord (lá a linha inteira fica a 30%).
+    let fundo_painel = tema::mistura(c.lateral, c.fundo, 0.45);
+    let apagado = tema::mistura(c.texto_fraco, fundo_painel, 0.45);
     let sub: Element<'a, Msg> = if em_chamada {
         text("Em chamada").size(12).color(c.sucesso_forte).into()
     } else {
@@ -187,43 +190,60 @@ fn linha_de_membro<'a>(
                 ui::status::rotulo_status(st),
             ),
             12.0,
-            c.texto_fraco,
+            if offline { apagado } else { c.texto_fraco },
         )
     };
-    let mut nome = row![text(&m.name).size(14).font(negrito())]
-        .spacing(6)
-        .align_y(Alignment::Center);
+    let mut nome = row![ui::nome::nome_de(
+        &m.uid,
+        &m.name,
+        14.0,
+        if offline { apagado } else { c.texto },
+        negrito()
+    )]
+    .spacing(6)
+    .align_y(Alignment::Center);
     if dono {
         nome = nome.push(ui::moderacao::badge_dono());
     }
     let alvo = m.usuario.clone().unwrap_or_else(|| m.name.clone());
-    let conteudo = row![
-        ui::avatar::avatar(
-            m.avatar.as_deref(),
-            &m.uid,
-            &m.name,
-            32.0,
-            Some(st),
-            c.lateral
-        ),
-        column![nome, sub].spacing(1).width(Length::Fill),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let corpo: Element<'a, Msg> = if offline {
-        container(conteudo)
-            .style(|_| container::Style {
-                text_color: Some(tema::cores().texto_fraco),
+    let foto = ui::avatar::avatar(
+        m.avatar.as_deref(),
+        &m.uid,
+        &m.name,
+        32.0,
+        Some(st),
+        fundo_painel,
+    );
+    let foto: Element<'a, Msg> = if offline {
+        let veu = container(space().width(32).height(32)).style(move |_| container::Style {
+            background: Some(Background::Color(iced::Color {
+                a: 0.6,
+                ..fundo_painel
+            })),
+            border: iced::Border {
+                radius: 16.0.into(),
                 ..Default::default()
-            })
-            .into()
+            },
+            ..Default::default()
+        });
+        iced::widget::stack![foto, veu].into()
     } else {
-        conteudo.into()
+        foto
     };
+    let conteudo = row![foto, column![nome, sub].spacing(1).width(Length::Fill),]
+        .spacing(10)
+        .align_y(Alignment::Center);
     let id_hover = format!("memb-{}", m.uid);
+    let corpo: Element<'a, Msg> = crate::ui::loja::com_placa(
+        container(conteudo).padding([6, 8]).into(),
+        &m.uid,
+        crate::anim::dentro_desde(&id_hover),
+        offline,
+        fundo_painel,
+    );
     let btn = button(corpo)
         .width(Length::Fill)
-        .padding([6, 8])
+        .padding(0)
         .style(crate::ui::efeitos::item_suave(id_hover.clone(), false))
         .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
     iced::widget::mouse_area(btn)
@@ -322,13 +342,16 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
             .into(),
     };
     let alvo = m.usuario.clone().unwrap_or_else(|| m.name.clone());
-    let avatar_btn = button(ui::avatar::avatar(
+    let escolha = crate::cosmeticos::de(&m.uid);
+    let avatar_btn = button(ui::avatar::avatar_com(
         m.avatar.as_deref(),
         &m.uid,
         &m.name,
         80.0,
         Some(st),
         c.lateral,
+        escolha.decoracao.as_ref().map(|x| x.arquivo.as_str()),
+        true,
     ))
     .padding(0)
     .style(tema::botao_transparente)
@@ -344,17 +367,23 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
         }),
     ];
     let mut corpo = Column::new().spacing(12).padding([8, 16]);
-    let nome_btn = button(text(&m.name).size(20).font(negrito()))
-        .padding(0)
-        .style(move |_, st| button::Style {
-            text_color: if matches!(st, button::Status::Hovered) {
-                c.destaque
-            } else {
-                c.texto
-            },
-            ..Default::default()
-        })
-        .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
+    let nome_btn = button(ui::nome::nome(
+        &m.name,
+        escolha.nome.as_ref(),
+        20.0,
+        c.texto,
+        negrito(),
+    ))
+    .padding(0)
+    .style(move |_, st| button::Style {
+        text_color: if matches!(st, button::Status::Hovered) {
+            c.destaque
+        } else {
+            c.texto
+        },
+        ..Default::default()
+    })
+    .on_press(Msg::AbrePerfilUsuario(alvo.clone()));
     corpo = corpo.push(nome_btn);
     if let Some(u) = &m.usuario {
         corpo = corpo.push(text(format!("@{u}")).size(14).style(fraco));
@@ -380,10 +409,20 @@ fn perfil_da_conversa_direta<'a>(m: &'a Membro, avisos: &'a EstadoAvisos) -> Ele
             .filter(|b| !b.trim().is_empty())
             .unwrap_or_else(|| "Sem descrição.".into()),
     ));
+    let fundo = crate::ui::loja::fundo_do_cartao(&escolha);
+    let com_tema = escolha.tema.is_some();
+    let perfil: Element<'a, Msg> = container(crate::ui::loja::com_efeito(
+        column![topo, corpo].into(),
+        &escolha,
+    ))
+    .style(move |_| container::Style {
+        background: com_tema.then_some(fundo),
+        ..Default::default()
+    })
+    .into();
+    let perfil = crate::ui::loja::com_moldura(perfil, &escolha);
     column![
-        scrollable(column![topo, corpo])
-            .height(Length::Fill)
-            .style(tema::rolagem),
+        scrollable(perfil).height(Length::Fill).style(tema::rolagem),
         container(
             button(
                 text("Ver Perfil Completo")
@@ -419,7 +458,7 @@ pub fn painel_direito<'a>(info: &InfoConversa<'a>, avisos: &'a EstadoAvisos) -> 
     container(conteudo)
         .width(248)
         .height(Length::Fill)
-        .style(tema::painel_lateral_reto)
+        .style(tema::painel_membros)
         .into()
 }
 

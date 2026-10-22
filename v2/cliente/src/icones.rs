@@ -1,6 +1,10 @@
-//! Ícones do app: Lucide (licença ISC, `assets/icones/LICENSE-lucide`),
-//! embutidos no binário. Um conjunto só, traço fino, cor herdada do estilo —
-//! nada de emoji fazendo papel de ícone (AGENTS.md, seção 9).
+//! Ícones do app, embutidos no binário, cor herdada do estilo — nada de emoji
+//! fazendo papel de ícone (AGENTS.md, seção 9).
+//!
+//! Os de uso constante (barra superior, barra da chamada, rodapé, campo de
+//! mensagem) são preenchidos: Material Symbols Rounded, variante "fill"
+//! (Apache-2.0, `assets/icones/LICENSE-material-symbols`, arquivos `ms-*`).
+//! O resto é Lucide de contorno (ISC, `assets/icones/LICENSE-lucide`).
 
 use iced::widget::svg;
 
@@ -16,50 +20,50 @@ macro_rules! icones {
 }
 
 icones! {
-    mic => "mic",
-    mic_off => "mic-off",
-    fone => "headphones",
-    fone_off => "headphone-off",
-    tela => "monitor-up",
-    tela_off => "monitor-x",
-    desligar => "phone-off",
-    chamada => "phone",
+    mic => "ms-mic",
+    mic_off => "ms-mic-off",
+    fone => "ms-headphones",
+    fone_off => "ms-headphones-off",
+    tela => "ms-present-to-all",
+    tela_off => "ms-cancel-presentation",
+    desligar => "call-end",
+    chamada => "ms-call",
     sair => "log-out",
-    enviar => "send",
+    enviar => "ms-send",
     sala => "hash",
     voltar => "arrow-left",
     fechar => "x",
     alerta => "circle-alert",
-    camera => "video",
-    camera_off => "video-off",
-    volume => "volume-2",
-    volume_mudo => "volume-x",
-    configuracoes => "settings",
+    camera => "ms-videocam",
+    camera_off => "ms-videocam-off",
+    volume => "ms-volume-up",
+    volume_mudo => "ms-volume-off",
+    configuracoes => "ms-settings",
     anexo => "anexo",
     editar => "editar",
     lixeira => "lixeira",
     responder => "responder",
-    smile => "smile",
-    pin => "pin",
+    smile => "ms-mood",
+    pin => "ms-keep",
     copiar => "copiar",
     coroa => "crown",
-    amigos => "users",
+    amigos => "ms-group",
     paleta => "palette",
     mais => "plus",
     expulsar => "user-x",
     busca => "search",
     sino => "bell",
     roda => "roda",
-    sinal => "signal",
+    sinal => "ms-signal-cellular-alt",
     grade => "layout-grid",
-    musica => "music",
+    musica => "ms-music-note",
     lapis => "pencil",
-    usuario_mais => "user-plus",
+    usuario_mais => "ms-person-add",
     seta_baixo => "chevron-down",
     maximizar => "maximize",
     expandir => "expand",
     minimizar => "minimize",
-    reticencias => "ellipsis",
+    reticencias => "ms-more-horiz",
     mensagem => "message-square",
     arquivo => "file",
     grafico => "chart-no-axes-column",
@@ -112,4 +116,6 @@ icones! {
     menos => "minus",
     dedo => "pointer",
     quadrado => "square",
+    atividades => "ms-rocket-launch",
+    mais_circulo => "ms-add-circle",
 }

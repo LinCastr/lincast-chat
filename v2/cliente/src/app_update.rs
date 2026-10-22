@@ -9,6 +9,21 @@ impl App {
             match ev {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     self.cursor = *position;
+                    if let Tela::Sala(s) = &mut self.tela
+                        && let Some((y0, h0)) = s.arrasto_palco
+                    {
+                        let maximo = (self.janela.height - 220.0).max(160.0);
+                        s.altura_palco = Some((h0 + position.y - y0).clamp(140.0, maximo));
+                    }
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => {
+                    if let Tela::Sala(s) = &mut self.tela
+                        && s.arrasto_palco.take().is_some()
+                    {
+                        self.prefs_conversas.altura_palco =
+                            s.altura_palco.map(|h| h.round() as u32);
+                        self.prefs_conversas.salva();
+                    }
                 }
                 iced::Event::Window(iced::window::Event::Resized(tam)) => self.janela = *tam,
                 iced::Event::Window(iced::window::Event::Focused) => self.janela_focada = true,
@@ -27,6 +42,13 @@ impl App {
                 if let avisos::Evento::Pronto(tx) = &ev {
                     self.avisos_cmd = Some(tx.clone());
                 }
+                // A cada (re)conexão: catálogo e escolhas de todo mundo (o que
+                // mudou enquanto estava fora não chegou pelo aviso).
+                let cosmeticos = if matches!(ev, avisos::Evento::Conectado) {
+                    carrega_cosmeticos(self.srv.clone(), self.token.clone())
+                } else {
+                    Task::none()
+                };
                 self.avisos.meu_usuario = self.eu.as_ref().and_then(|e| e.usuario.clone());
                 self.sincroniza_conversa_ativa();
                 // Mensagem nova numa conversa fechada traz ela de volta à lista.
@@ -66,6 +88,7 @@ impl App {
                         "critical",
                     );
                 }
+                return cosmeticos;
             }
             Msg::Sessao(Ok(Some(eu))) => {
                 self.eu = Some(eu);
@@ -204,6 +227,9 @@ impl App {
                     mensagens: Vec::new(),
                     imagens: HashMap::new(),
                     selecionaveis: HashMap::new(),
+                    altura_palco: self.prefs_conversas.altura_palco.map(|h| h as f32),
+                    altura_palco_medida: 0.0,
+                    arrasto_palco: None,
                     rascunho: String::new(),
                     na_chamada: false,
                     mudo: false,
@@ -1103,7 +1129,25 @@ impl App {
             Msg::FechaVisaoJogo => {
                 self.modal_visao_jogo = None;
             }
+            Msg::ArrastaPalco => {
+                if let Tela::Sala(s) = &mut self.tela {
+                    let h = s.altura_palco.unwrap_or(s.altura_palco_medida);
+                    s.arrasto_palco = Some((self.cursor.y, h));
+                }
+            }
+            Msg::RestauraPalco => {
+                if let Tela::Sala(s) = &mut self.tela {
+                    s.altura_palco = None;
+                    s.arrasto_palco = None;
+                }
+                self.prefs_conversas.altura_palco = None;
+                self.prefs_conversas.salva();
+            }
             Msg::AbreImagemMensagem { id, titulo } => {
+                // Opens on release, only if the press started on this image.
+                if crate::gifanim::tira_pressionada() != Some(crate::gifanim::chave_mensagem(&id)) {
+                    return Task::none();
+                }
                 self.modal_foto = Some(ModalFoto {
                     url: String::new(),
                     titulo,
@@ -1179,6 +1223,17 @@ impl App {
             Msg::DefineVolumeToque(v) => {
                 self.prefs_conversas.volume_toque = v.min(100);
                 self.prefs_conversas.salva();
+            }
+            Msg::DefineVolumeChamada(v) => {
+                self.prefs_conversas.volume_chamada = v.min(200);
+                self.prefs_conversas.salva();
+                let ganho = self.prefs_conversas.volume_saida();
+                if let Tela::Sala(s) = &self.tela {
+                    s.manda(sala::Comando::VolumeSaida(ganho));
+                }
+                if let Some(ca) = &self.chamada_ativa {
+                    ca.manda(sala::Comando::VolumeSaida(ganho));
+                }
             }
             Msg::DefineVolumeEfeitos(v) => {
                 let v = v.min(100);
@@ -1466,7 +1521,43 @@ impl App {
                     y: self.cursor.y,
                 });
             }
-            Msg::HoverGif(url) => crate::gifanim::define_hover(url),
+            Msg::HoverGif(url) => {
+                if url.is_none() {
+                    crate::gifanim::define_pressionada(None);
+                }
+                crate::gifanim::define_hover(url);
+            }
+            Msg::QuadroPronto {
+                dono,
+                de_tela,
+                largura,
+                altura,
+                imagem,
+                alocacao,
+                inicio,
+            } => {
+                ui::video::registra_subida(inicio.elapsed().as_secs_f32() * 1000.0);
+                let sala_tela = match &mut self.tela {
+                    Tela::Sala(s) => Some(&mut s.videos),
+                    _ => None,
+                };
+                for videos in sala_tela
+                    .into_iter()
+                    .chain(self.chamada_ativa.as_mut().map(|c| &mut c.videos))
+                {
+                    if let Some(v) = videos
+                        .iter_mut()
+                        .find(|v| v.dono == dono && v.de_tela == de_tela)
+                    {
+                        v.imagem = imagem.clone();
+                        v.alocacao = alocacao.clone();
+                        v.largura = largura;
+                        v.altura = altura;
+                        v.subindo = None;
+                    }
+                }
+            }
+            Msg::PressionaImagem(chave) => crate::gifanim::define_pressionada(Some(chave)),
             Msg::MinhasListas(Ok(p)) => {
                 if let Some(ed) = &mut self.modal_meu_perfil {
                     ed.jogos.listas = p.listas.clone();
@@ -1542,6 +1633,84 @@ impl App {
                 )));
             }
             Msg::TickGif => {}
+            Msg::CatalogoCosmeticos(Ok(v)) => crate::cosmeticos::define_catalogo(v),
+            Msg::CatalogoCosmeticos(Err(e)) => log::warn!("[cosmeticos] catálogo: {e}"),
+            Msg::PessoasCosmeticos(Ok(m)) => crate::cosmeticos::define_todas(m),
+            Msg::PessoasCosmeticos(Err(e)) => log::warn!("[cosmeticos] pessoas: {e}"),
+            Msg::CosmeticoPronto | Msg::TickCosmeticos => {}
+            Msg::AbreLoja(t) => {
+                self.menu_status_aberto = false;
+                self.loja = Some(ui::loja::EstadoLoja::de_tipo(t));
+                if crate::cosmeticos::catalogo().is_empty() {
+                    return carrega_cosmeticos(self.srv.clone(), self.token.clone());
+                }
+            }
+            Msg::FechaLoja => {
+                if let Some(l) = &mut self.loja
+                    && l.detalhe.is_some()
+                {
+                    l.detalhe = None;
+                } else {
+                    self.loja = None;
+                }
+            }
+            Msg::Loja(ui::loja::LojaMsg::Usa(tipo, id)) => {
+                if let Some(l) = &mut self.loja {
+                    l.detalhe = None;
+                }
+                let Some(uid) = self.avisos.meu_uid().map(String::from) else {
+                    return Task::none();
+                };
+                let mut e = (*crate::cosmeticos::de(&uid)).clone();
+                *e.slot_mut(tipo) = id.and_then(|id| crate::cosmeticos::item(&id)).map(|i| {
+                    crate::cosmeticos::Ref {
+                        id: i.id,
+                        arquivo: i.arquivo,
+                    }
+                });
+                return self.salva_cosmeticos(e);
+            }
+            Msg::Loja(m) => {
+                if let Some(l) = &mut self.loja {
+                    ui::loja::aplica(l, m);
+                }
+            }
+            Msg::AbreEstiloNome => {
+                self.menu_status_aberto = false;
+                let uid = self.avisos.meu_uid().unwrap_or("");
+                self.estilo_nome = Some(ui::estilo_nome::EdicaoEstilo::de(&crate::cosmeticos::de(
+                    uid,
+                )));
+            }
+            Msg::FechaEstiloNome => self.estilo_nome = None,
+            Msg::EstiloNome(m) => {
+                if let Some(ed) = &mut self.estilo_nome {
+                    ui::estilo_nome::aplica(ed, m);
+                }
+            }
+            Msg::AplicaEstiloNome => {
+                let (Some(ed), Some(uid)) = (
+                    self.estilo_nome.take(),
+                    self.avisos.meu_uid().map(String::from),
+                ) else {
+                    return Task::none();
+                };
+                let nova = ed.aplicado(&crate::cosmeticos::de(&uid));
+                return self.salva_cosmeticos(nova);
+            }
+            Msg::CosmeticosSalvos(Ok(e)) => {
+                if let Some(uid) = self.avisos.meu_uid() {
+                    crate::cosmeticos::define_pessoa(uid, e);
+                }
+                self.toast = Some(("Perfil atualizado.".into(), std::time::Instant::now()));
+            }
+            Msg::CosmeticosSalvos(Err(e)) => {
+                self.toast = Some((
+                    format!("Não deu para salvar: {e}"),
+                    std::time::Instant::now(),
+                ));
+                return carrega_cosmeticos(self.srv.clone(), self.token.clone());
+            }
             Msg::AlternaReduzAnimacoes => {
                 let mut c = crate::desempenho::atual();
                 c.reduz_animacoes = !c.reduz_animacoes;
@@ -1931,6 +2100,12 @@ impl App {
                 self.menu_contexto = None;
                 if let Some(tx) = &self.avisos_cmd {
                     let _ = tx.send(avisos::Comando::TocarDeNovo { conversa, uid });
+                }
+            }
+            Msg::ParaDeTocar { conversa, uid } => {
+                self.menu_contexto = None;
+                if let Some(tx) = &self.avisos_cmd {
+                    let _ = tx.send(avisos::Comando::PararToque { conversa, uid });
                 }
             }
             Msg::RemoveDoGrupo { conversa, uid } => {
@@ -2729,6 +2904,18 @@ impl App {
                 && matches!(&key, iced::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("d")) =>
             {
                 return Task::done(Msg::TogglePainelDiagnostico);
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            })) if self.estilo_nome.is_some() => {
+                self.estilo_nome = None;
+            }
+            Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            })) if self.loja.is_some() => {
+                return Task::done(Msg::FechaLoja);
             }
             Msg::EventoIced(iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),

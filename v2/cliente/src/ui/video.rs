@@ -1,27 +1,128 @@
 //! Painel de vídeos: grade, foco em quem fala e tela cheia (M9).
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use iced::widget::{
-    Column, button, column, container, image, mouse_area, row, scrollable, space, stack, svg, text,
+    Column, button, canvas, column, container, image, mouse_area, row, scrollable, space, stack,
+    svg, text,
 };
 use iced::{Alignment, Element, Length};
 
 use crate::{Msg, Pessoa, Video, fraco, icones, negrito, tema, ui};
 
-/// O quadro atual sobre o anterior. O iced sobe imagem grande para a GPU em
-/// segundo plano e, no primeiro desenho dela, não mostra nada: o anterior (já na
-/// GPU) cobre esse buraco, senão o vídeo pisca a cada quadro novo.
+/// The current frame (already on the GPU, see `Video::alocacao`).
 fn quadro_de_video<'a>(v: &Video, largura: Length, altura: Length) -> Element<'a, Msg> {
-    let camada = |h: &image::Handle| {
-        image(h.clone())
-            .width(largura)
-            .height(altura)
-            .content_fit(iced::ContentFit::Contain)
+    let quadro = image(v.imagem.clone())
+        .width(largura)
+        .height(altura)
+        .content_fit(iced::ContentFit::Contain);
+    stack![quadro, marca_desenho(&v.desenhado)].into()
+}
+
+/// Uploads a received frame; `Msg::QuadroPronto` puts it on screen once iced
+/// guarantees it draws in the next frame.
+pub fn sobe_quadro(q: crate::sala::Quadro) -> iced::Task<Msg> {
+    let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
+    let inicio = std::time::Instant::now();
+    let (dono, de_tela, largura, altura) = (q.dono, q.de_tela, q.largura, q.altura);
+    iced::widget::image::allocate(imagem.clone()).map(move |r| Msg::QuadroPronto {
+        dono: dono.clone(),
+        de_tela,
+        largura,
+        altura,
+        imagem: imagem.clone(),
+        alocacao: r.ok(),
+        inicio,
+    })
+}
+
+/// Upload times of video frames, for the 30 s log: (count, sum ms, max ms).
+static SUBIDA: std::sync::Mutex<(u32, f32, f32)> = std::sync::Mutex::new((0, 0.0, 0.0));
+
+pub fn registra_subida(ms: f32) {
+    EXIBIDOS.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut s) = SUBIDA.lock() {
+        s.0 += 1;
+        s.1 += ms;
+        s.2 = s.2.max(ms);
+    }
+}
+
+/// "avg/max ms" of the frame uploads since the last call.
+pub fn subida_desde_ultima_leitura() -> String {
+    let Ok(mut s) = SUBIDA.lock() else {
+        return String::new();
     };
-    match &v.anterior {
-        Some(anterior) => stack![camada(anterior), camada(&v.imagem)].into(),
-        None => camada(&v.imagem).into(),
+    let (n, soma, max) = std::mem::take(&mut *s);
+    if n == 0 {
+        return "-".into();
+    }
+    format!("{:.1}/{:.1} ms", soma / n as f32, max)
+}
+
+/// Set when the video is actually drawn. While the window is not drawn
+/// (minimized, or on another workspace behind a fullscreen game) iced still
+/// lays the view out on every message, and each new image handle measured
+/// there stays in the renderer's image cache, which is only trimmed when the
+/// window draws: one 1080p stream filled gigabytes in minutes. A new frame
+/// only replaces the image once the previous one reached the screen.
+pub fn marca_desenho<'a>(desenhado: &Arc<AtomicBool>) -> Element<'a, Msg> {
+    canvas(MarcaDesenho(desenhado.clone()))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Whether a new frame may replace the current one (see [`marca_desenho`]).
+pub fn aceita_quadro(desenhado: &AtomicBool) -> bool {
+    desenhado.swap(false, Ordering::Relaxed)
+}
+
+/// When any video was last drawn (ms since the epoch).
+static ULTIMO_DESENHO: AtomicU64 = AtomicU64::new(0);
+
+fn agora_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Whether a video frame may start uploading: the window is drawing (a video
+/// was drawn in the last 100 ms) or this video's last frame was drawn. With the
+/// window hidden neither holds, so frames are dropped (see [`marca_desenho`]).
+/// Not waiting for this exact video's draw keeps uploads back to back: each
+/// one takes ~15 ms, and waiting for the draw as well halved the fps.
+pub fn aceita_quadro_de_video(desenhado: &AtomicBool) -> bool {
+    let recente = agora_ms().saturating_sub(ULTIMO_DESENHO.load(Ordering::Relaxed)) < 100;
+    aceita_quadro(desenhado) || recente
+}
+
+/// Frames that replaced an image on screen, all videos together (for the log).
+static EXIBIDOS: AtomicU64 = AtomicU64::new(0);
+
+pub fn exibidos_desde_ultima_leitura() -> u64 {
+    EXIBIDOS.swap(0, Ordering::Relaxed)
+}
+
+struct MarcaDesenho(Arc<AtomicBool>);
+
+impl<M> canvas::Program<M> for MarcaDesenho {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        _: &iced::Renderer,
+        _: &iced::Theme,
+        _: iced::Rectangle,
+        _: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        self.0.store(true, Ordering::Relaxed);
+        ULTIMO_DESENHO.store(agora_ms(), Ordering::Relaxed);
+        Vec::new()
     }
 }
 
@@ -396,7 +497,9 @@ mod tests {
             largura: 1280,
             altura: 720,
             imagem: image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
-            anterior: None,
+            alocacao: None,
+            subindo: None,
+            desenhado: Default::default(),
         }
     }
 

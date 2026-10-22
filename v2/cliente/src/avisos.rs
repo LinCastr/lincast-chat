@@ -38,7 +38,15 @@ pub struct Entrada {
 pub enum Comando {
     Ligar(String),
     Recusar(String),
-    TocarDeNovo { conversa: String, uid: String },
+    TocarDeNovo {
+        conversa: String,
+        uid: String,
+    },
+    /// Stop ringing someone (only for who is in the call).
+    PararToque {
+        conversa: String,
+        uid: String,
+    },
 }
 
 impl Comando {
@@ -48,6 +56,9 @@ impl Comando {
             Comando::Recusar(c) => json!({"type": "recusar", "conversa": c}),
             Comando::TocarDeNovo { conversa, uid } => {
                 json!({"type": "tocar-de-novo", "conversa": conversa, "uid": uid})
+            }
+            Comando::PararToque { conversa, uid } => {
+                json!({"type": "parar-toque", "conversa": conversa, "uid": uid})
             }
         }
     }
@@ -177,6 +188,11 @@ pub enum Evento {
         uid: String,
         status_custom: Option<crate::api::StatusCustom>,
     },
+    /// Alguém trocou os cosméticos do perfil.
+    Cosmeticos {
+        uid: String,
+        cosmeticos: Option<crate::cosmeticos::Escolha>,
+    },
 }
 
 /// Traduz uma mensagem do servidor. `None` para o que não é aviso (ou não
@@ -238,6 +254,10 @@ pub fn parse_evento(v: &Value) -> Option<Evento> {
         "status-amigo" => Some(Evento::StatusAmigo {
             uid: texto("uid")?,
             status: texto("status")?,
+        }),
+        "cosmeticos" => Some(Evento::Cosmeticos {
+            uid: texto("uid")?,
+            cosmeticos: serde_json::from_value(v["cosmeticos"].clone()).ok(),
         }),
         "status-custom-amigo" => Some(Evento::StatusCustomAmigo {
             uid: texto("uid")?,
@@ -428,6 +448,9 @@ impl EstadoAvisos {
                 {
                     m.status = Some(status.clone());
                 }
+            }
+            Evento::Cosmeticos { uid, cosmeticos } => {
+                crate::cosmeticos::define_pessoa(uid, cosmeticos.clone());
             }
             Evento::StatusCustomAmigo { uid, status_custom } => {
                 for m in self

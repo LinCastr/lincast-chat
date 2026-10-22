@@ -50,6 +50,8 @@ pub struct ConfigCompartilharTela {
     pub todo_pc: bool,
     /// A lista de sons está aberta (popup abaixo do botão).
     pub som_aberto: bool,
+    /// Changing a stream that is already going (button "Aplicar").
+    pub ajustando: bool,
 }
 
 impl Default for ConfigCompartilharTela {
@@ -60,6 +62,7 @@ impl Default for ConfigCompartilharTela {
             apps: Vec::new(),
             todo_pc: false,
             som_aberto: false,
+            ajustando: false,
         }
     }
 }
@@ -305,7 +308,13 @@ pub fn modal_compartilhar_tela<'a>(
                 .height(22)
                 .style(tema::icone_cor(c.destaque)),
             column![
-                text("Compartilhar tela").size(20).font(negrito()),
+                text(if cfg.ajustando {
+                    "Configurações da transmissão"
+                } else {
+                    "Compartilhar tela"
+                })
+                .size(20)
+                .font(negrito()),
                 text(format!("Para {destino}")).size(13).style(fraco),
             ]
             .spacing(2)
@@ -326,8 +335,12 @@ pub fn modal_compartilhar_tela<'a>(
             .on_toggle(Msg::AlternaAutoBitrate)
             .size(16)
             .text_size(13),
-        text(aviso_fonte).size(12).style(fraco),
-        if lembrada {
+        if cfg.ajustando {
+            Element::from(space().height(0))
+        } else {
+            text(aviso_fonte).size(12).style(fraco).into()
+        },
+        if lembrada && !cfg.ajustando {
             button(text("Escolher outra tela ou janela").size(12))
                 .padding([6, 12])
                 .style(tema::botao_secundario)
@@ -342,10 +355,17 @@ pub fn modal_compartilhar_tela<'a>(
                 .padding([8, 16])
                 .style(tema::botao_secundario)
                 .on_press(Msg::CancelaTela),
-            button(text("Transmitir").size(14))
-                .padding([8, 16])
-                .style(tema::botao_primario)
-                .on_press(Msg::ConfirmaTela),
+            button(
+                text(if cfg.ajustando {
+                    "Aplicar"
+                } else {
+                    "Transmitir"
+                })
+                .size(14)
+            )
+            .padding([8, 16])
+            .style(tema::botao_primario)
+            .on_press(Msg::ConfirmaTela),
         ]
         .spacing(8),
     ]

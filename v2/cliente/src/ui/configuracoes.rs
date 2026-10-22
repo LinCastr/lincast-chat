@@ -152,6 +152,8 @@ fn janela_editar_perfil<'a>(ctx: ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
                 divisoria(),
                 perfil::editor_perfil(&ctx, ed),
                 divisoria(),
+                crate::ui::loja::secao_editor(ctx.uid, ctx.nome_atual),
+                divisoria(),
                 crate::ui::jogos_perfil::editor(&ed.jogos),
             ]
             .spacing(14)
@@ -568,10 +570,27 @@ fn renderiza_aba_audio<'a>(ctx: &ContextoConfiguracoes<'a>) -> Element<'a, Msg> 
         .spacing(24),
     );
     col = col.push(
-        text("Os volumes são os do sistema (PipeWire); o app não aplica ganho próprio.")
+        text("Os volumes acima são os do sistema (PipeWire).")
             .size(12)
             .style(fraco),
     );
+    let vol_chamada = ctx.prefs.volume_chamada.min(200);
+    col = col.push(campo_rotulado(
+        "Volume das vozes e transmissões na chamada",
+        row![
+            slider(0..=200u16, vol_chamada, Msg::DefineVolumeChamada)
+                .step(5u16)
+                .style(tema::estilo_slider)
+                .width(Length::Fill),
+            text(format!("{vol_chamada}%"))
+                .size(12)
+                .width(40)
+                .color(c.texto_medio),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into(),
+    ));
 
     // Teste de microfone com medidor em segmentos.
     let btn_teste = button(

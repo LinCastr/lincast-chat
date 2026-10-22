@@ -468,6 +468,14 @@ impl SalaAberta {
                 self.config_tela = Some(ui::tela::ConfigCompartilharTela::guardada());
                 return em_segundo_plano(lista_apps_tocando, Msg::AppsTocando);
             }
+            Msg::ConfiguraTransmissao => {
+                // The saved choice is the one the running stream was started with.
+                self.config_tela = Some(ui::tela::ConfigCompartilharTela {
+                    ajustando: true,
+                    ..ui::tela::ConfigCompartilharTela::guardada()
+                });
+                return em_segundo_plano(lista_apps_tocando, Msg::AppsTocando);
+            }
             Msg::AppsTocando(Ok(apps)) => {
                 if let Some(cfg) = &mut self.config_tela {
                     cfg.apps = apps.into_iter().map(|a| (a, false)).collect();
@@ -516,10 +524,18 @@ impl SalaAberta {
                             })
                             .collect()
                     };
-                    self.manda(Comando::CompartilharTela {
-                        apps,
-                        perfil: cfg.perfil,
-                        auto_bitrate: cfg.auto_bitrate,
+                    self.manda(if cfg.ajustando {
+                        Comando::AjustaTela {
+                            apps,
+                            perfil: cfg.perfil,
+                            auto_bitrate: cfg.auto_bitrate,
+                        }
+                    } else {
+                        Comando::CompartilharTela {
+                            apps,
+                            perfil: cfg.perfil,
+                            auto_bitrate: cfg.auto_bitrate,
+                        }
                     });
                 }
             }
@@ -537,6 +553,8 @@ impl SalaAberta {
             }
             Msg::CancelaTela => self.config_tela = None,
             Msg::ParaTela => self.manda(Comando::PararTela),
+            Msg::LimpaSelecoes => self.limpa_selecoes(None),
+            Msg::PalcoMedido(h) => self.altura_palco_medida = h,
             Msg::SelecaoTexto(chave, acao) => {
                 use iced::widget::text_editor::{Action, Edit};
                 match acao {
@@ -639,6 +657,7 @@ impl SalaAberta {
                         cameras,
                         indice_selecionado: indice,
                         imagem: None,
+                        desenhado: Default::default(),
                     });
                 }
             }

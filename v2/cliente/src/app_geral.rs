@@ -6,8 +6,19 @@ impl App {
     /// Porta de entrada do `update`: trata a mensagem e, em seguida, pede as
     /// fotos que ficaram faltando (a tela só desenha, nunca busca).
     pub(crate) fn update(&mut self, msg: Msg) -> Task<Msg> {
+        if !matches!(
+            msg,
+            Msg::TickGif | Msg::TickCosmeticos | Msg::AnimTick | Msg::CosmeticoPronto
+        ) {
+            crate::cosmeticos::cutuca();
+        }
         let tarefa = self.atualiza(msg);
-        let pedidos = self.pede_imagens();
+        let mut pedidos = self.pede_imagens();
+        pedidos.extend(
+            crate::cosmeticos::pedidos()
+                .into_iter()
+                .map(|(url, animar)| baixa_cosmetico(self.srv.clone(), url, animar)),
+        );
         if pedidos.is_empty() {
             tarefa
         } else {
@@ -140,6 +151,19 @@ impl App {
         })
     }
 
+    /// Grava os cosméticos (e já mostra: o servidor confirma depois).
+    pub(crate) fn salva_cosmeticos(&mut self, e: crate::cosmeticos::Escolha) -> Task<Msg> {
+        let (Some(token), Some(uid)) = (self.token.clone(), self.avisos.meu_uid()) else {
+            return Task::none();
+        };
+        crate::cosmeticos::define_pessoa(uid, Some(e.clone()));
+        let srv = self.srv.clone();
+        em_segundo_plano(
+            move || api::salva_cosmeticos(&srv, &token, &e).map_err(|e| format!("{e:#}")),
+            Msg::CosmeticosSalvos,
+        )
+    }
+
     pub(crate) fn pede_capas(&self) -> Task<Msg> {
         Task::batch(self.pede_imagens())
     }
@@ -257,6 +281,8 @@ impl App {
                 janela_focada: true,
                 modal_grupo: None,
                 modal_status_custom: None,
+                loja: None,
+                estilo_nome: None,
                 presenca_aberta: false,
                 presenca_fecha_em: None,
                 volume_mic: None,

@@ -80,7 +80,28 @@ pub fn sobre_contraste(c: Color) -> Color {
 
 // --- Paletas da v1 e predefinições ---
 
-/// Tema padrão: grafite neutro com azul contido de destaque.
+/// Tema padrão: quase preto e neutro, como o tema escuro atual do Discord.
+/// Camadas próximas: coluna de conversas (mais funda), painel de membros,
+/// chat e campo de mensagem (mais clara), sem tom azulado.
+pub const PADRAO: Cores = Cores {
+    fundo: rgb(0x1a1a1e),
+    lateral: rgb(0x121214),
+    elevado: rgb(0x222327),
+    borda: rgb(0x29292e),
+    texto: rgb(0xdbdee1),
+    texto_fraco: rgb(0x8e9199),
+    destaque: rgb(0x5865f2),
+    sobre_destaque: rgb(0xffffff),
+    perigo: rgb(0xda373c),
+    sucesso: rgb(0x23a55a),
+    palco: rgb(0x0c0c0e),
+    forte: rgb(0x2c2d32),
+    texto_medio: rgb(0xb5b8bf),
+    alerta: rgb(0xf0b232),
+    sucesso_forte: rgb(0x2bb866),
+};
+
+/// Grafite: o padrão antigo, cinza-azulado com azul contido de destaque.
 pub const GRAFITE: Cores = Cores {
     fundo: rgb(0x232429),
     lateral: rgb(0x1c1d22),
@@ -426,7 +447,7 @@ pub fn wallust_disponivel() -> bool {
 
 // --- Estado Global e Controle de Tema ---
 
-static TEMA_ATUAL: RwLock<Cores> = RwLock::new(GRAFITE);
+static TEMA_ATUAL: RwLock<Cores> = RwLock::new(PADRAO);
 static ID_TEMA_ATUAL: RwLock<String> = RwLock::new(String::new());
 
 pub fn cores() -> Cores {
@@ -444,8 +465,9 @@ pub fn tema_atual_id() -> String {
 
 pub fn define_tema(id: &str) -> bool {
     let novas_cores = match id {
-        "wallust" => extrai_cores_wallust().unwrap_or(GRAFITE),
-        "padrao" | "grafite" => GRAFITE,
+        "wallust" => extrai_cores_wallust().unwrap_or(PADRAO),
+        "padrao" => PADRAO,
+        "grafite" => GRAFITE,
         "nord" => NORD,
         "dracula" => DRACULA,
         "tokyo-night" => TOKYO_NIGHT,
@@ -503,7 +525,8 @@ pub fn lista_temas() -> Vec<InfoTema> {
     }
 
     let fixos = [
-        ("padrao", "Grafite neutro", GRAFITE),
+        ("padrao", "Escuro (padrão)", PADRAO),
+        ("grafite", "Grafite", GRAFITE),
         ("nord", "Nord", NORD),
         ("dracula", "Drácula", DRACULA),
         ("tokyo-night", "Tokyo Night", TOKYO_NIGHT),
@@ -694,6 +717,34 @@ fn sem_borda(raio: f32) -> Border {
     }
 }
 
+/// Nome de quem escreveu: mais forte que o texto da mensagem (branco no
+/// tema escuro, quase preto no claro).
+pub fn texto_forte() -> Color {
+    let c = cores();
+    if luminancia(c.fundo) < 0.5 {
+        mistura(c.texto, Color::WHITE, 0.7)
+    } else {
+        mistura(c.texto, Color::BLACK, 0.5)
+    }
+}
+
+/// Link no texto: o destaque clareado no tema escuro (o azul puro do
+/// destaque some sobre o fundo quase preto), escurecido no claro.
+pub fn cor_link() -> Color {
+    let c = cores();
+    if luminancia(c.fundo) < 0.5 {
+        mistura(c.destaque, Color::WHITE, 0.3)
+    } else {
+        mistura(c.destaque, Color::BLACK, 0.1)
+    }
+}
+
+/// Horário e informação de rodapé: um pouco abaixo do `texto_fraco`.
+pub fn texto_apagado() -> Color {
+    let c = cores();
+    mistura(c.texto_fraco, c.fundo, 0.2)
+}
+
 pub fn mistura(a: Color, b: Color, t: f32) -> Color {
     Color {
         r: a.r + (b.r - a.r) * t,
@@ -742,6 +793,17 @@ pub fn painel_lateral_reto(_: &Theme) -> container::Style {
     let c = cores();
     container::Style {
         background: Some(Background::Color(c.lateral)),
+        text_color: Some(c.texto),
+        ..Default::default()
+    }
+}
+
+/// Painel de membros / perfil à direita: um degrau entre a coluna de
+/// conversas e o chat, para as camadas ficarem distintas mas próximas.
+pub fn painel_membros(_: &Theme) -> container::Style {
+    let c = cores();
+    container::Style {
+        background: Some(Background::Color(mistura(c.lateral, c.fundo, 0.45))),
         text_color: Some(c.texto),
         ..Default::default()
     }
@@ -799,26 +861,6 @@ pub fn aviso_alerta(_: &Theme) -> container::Style {
         background: Some(Background::Color(mistura(c.fundo, cor_alerta, 0.12))),
         text_color: Some(c.texto),
         border: borda(mistura(c.fundo, cor_alerta, 0.40), RAIO_GRANDE),
-        ..Default::default()
-    }
-}
-
-/// Fundo e borda de mensagem que cita você (estilo Discord: âmbar/dourado sutil).
-pub fn destaque_mencao(_: &Theme) -> container::Style {
-    let c = cores();
-    let cor_mencao = Color::from_rgb8(0xd9, 0x9b, 0x26);
-    container::Style {
-        background: Some(Background::Color(mistura(c.fundo, cor_mencao, 0.12))),
-        border: Border {
-            color: cor_mencao,
-            width: 1.5,
-            radius: Radius {
-                top_left: RAIO,
-                top_right: 0.0,
-                bottom_right: 0.0,
-                bottom_left: RAIO,
-            },
-        },
         ..Default::default()
     }
 }
@@ -965,7 +1007,9 @@ pub fn botao_icone(
         let base = if perigoso {
             Some(mistura(c.lateral, c.perigo, 0.18))
         } else if ligado {
-            Some(mistura(c.lateral, c.destaque, 0.18))
+            // Ligado é neutro (fundo mais claro, ícone branco): a cor de
+            // destaque fica só para botão de ação e link.
+            Some(mistura(c.elevado, c.texto, 0.12))
         } else {
             None
         };
@@ -983,7 +1027,7 @@ pub fn botao_icone(
             text_color: if perigoso {
                 c.perigo
             } else if ligado {
-                c.destaque
+                texto_forte()
             } else if status == button::Status::Hovered {
                 c.texto
             } else {
@@ -1017,6 +1061,18 @@ pub fn campo(_: &Theme, status: text_input::Status) -> text_input::Style {
         value: c.texto,
         selection: mistura(c.elevado, c.destaque, 0.4),
     }
+}
+
+/// Campo de escrever mensagem: a camada mais clara, sem contorno em repouso
+/// (só um contorno discreto com foco), como a caixa de mensagem do Discord.
+pub fn campo_mensagem(t: &Theme, status: text_input::Status) -> text_input::Style {
+    let c = cores();
+    let mut st = campo(t, status);
+    st.border = match status {
+        text_input::Status::Focused { .. } => borda(mistura(c.elevado, c.texto, 0.12), RAIO),
+        _ => borda(c.elevado, RAIO),
+    };
+    st
 }
 
 /// Caixa de seleção (pick_list): fechada parece um campo; aberta, o menu
@@ -1274,6 +1330,9 @@ mod tests {
 
         assert!(define_tema("padrao"));
         assert_eq!(tema_atual_id(), "padrao");
+        assert_eq!(cores().fundo, PADRAO.fundo);
+
+        assert!(define_tema("grafite"));
         assert_eq!(cores().fundo, GRAFITE.fundo);
 
         // Tema inexistente deve falhar

@@ -58,10 +58,10 @@ pub fn botao_icone_anim<'a>(
     let cor = if perigoso {
         c.perigo
     } else if ligado {
-        c.destaque
+        tema::texto_forte()
     } else {
         // Clareia com o mouse em cima (o fundo e o contorno vêm do estilo).
-        tema::mistura(c.texto_fraco, c.texto, anim::t(id))
+        tema::mistura(c.texto_medio, c.texto, anim::t(id))
     };
     let miolo: Element<'a, Msg> = if efeito == Efeito::EmojiAleatorio && anim::dentro(id) {
         // Colorido enquanto o mouse está em cima; volta ao ícone ao sair.
@@ -70,10 +70,10 @@ pub fn botao_icone_anim<'a>(
                 .size(16)
                 .font(crate::tema::FONTE_EMOJI),
         )
-        .width(18)
-        .height(18)
-        .center_x(18)
-        .center_y(18)
+        .width(20)
+        .height(20)
+        .center_x(20)
+        .center_y(20)
         .into()
     } else {
         let angulo = match efeito {
@@ -81,15 +81,17 @@ pub fn botao_icone_anim<'a>(
             Efeito::Giro => anim::giro(id),
             _ => 0.0,
         };
+        // 20 px com 6 de folga: os ícones preenchidos têm margem interna,
+        // e assim o botão continua com o mesmo tamanho de antes (32 px).
         svg(icone)
-            .width(18)
-            .height(18)
+            .width(20)
+            .height(20)
             .rotation(iced::Radians(angulo))
             .style(tema::icone_cor(cor))
             .into()
     };
     let b = button(miolo)
-        .padding(7)
+        .padding(6)
         .style(tema::botao_icone(ligado, perigoso))
         .on_press_maybe(msg);
     com_hover(id, b)

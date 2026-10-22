@@ -56,8 +56,10 @@ impl Densidade {
     /// Espaçamento vertical entre mensagens no histórico do chat.
     pub fn espacamento_mensagens(self) -> u32 {
         match self {
-            Self::Confortavel => 4,
-            Self::Compacta => 1,
+            // Mensagens seguidas quase coladas, como no Discord; o respiro
+            // entre pessoas diferentes vem do padding do cabeçalho.
+            Self::Confortavel => 2,
+            Self::Compacta => 0,
         }
     }
 

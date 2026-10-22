@@ -195,26 +195,37 @@ impl App {
             // Quadro de tela que chega depois do fim (estava na fila) recriaria a
             // caixa com a imagem parada.
             Evento::Quadro(q) if q.de_tela && !apresentando(&s.pessoas, &q.dono) => {}
+            // Same for the camera: a late frame after it was turned off kept the
+            // last image on screen.
+            Evento::Quadro(q) if !q.de_tela && !com_camera(&s.pessoas, &q.dono) => {}
             Evento::Quadro(q) => {
-                let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
                 match s
                     .videos
                     .iter_mut()
                     .find(|v| v.dono == q.dono && v.de_tela == q.de_tela)
                 {
+                    // Still uploading the last one, or the previous frame was not
+                    // drawn yet (window hidden): drop this one.
+                    Some(v)
+                        if v.subindo.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0)
+                            || !ui::video::aceita_quadro_de_video(&v.desenhado) => {}
                     Some(v) => {
-                        v.anterior = Some(std::mem::replace(&mut v.imagem, imagem));
-                        v.largura = q.largura;
-                        v.altura = q.altura;
+                        v.subindo = Some(std::time::Instant::now());
+                        return ui::video::sobe_quadro(q);
                     }
-                    None => s.videos.push(Video {
-                        dono: q.dono,
-                        de_tela: q.de_tela,
-                        largura: q.largura,
-                        altura: q.altura,
-                        imagem,
-                        anterior: None,
-                    }),
+                    None => {
+                        let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
+                        s.videos.push(Video {
+                            dono: q.dono,
+                            de_tela: q.de_tela,
+                            largura: q.largura,
+                            altura: q.altura,
+                            imagem: imagem.clone(),
+                            alocacao: None,
+                            subindo: None,
+                            desenhado: Default::default(),
+                        });
+                    }
                 }
             }
             Evento::VideoFechou { dono, de_tela } => {
@@ -231,7 +242,9 @@ impl App {
                 }
             }
             Evento::QuadroPrevia(q) => {
-                if let Some(prev) = &mut s.previa_camera {
+                if let Some(prev) = &mut s.previa_camera
+                    && (prev.imagem.is_none() || ui::video::aceita_quadro(&prev.desenhado))
+                {
                     prev.imagem = Some(image::Handle::from_rgba(q.largura, q.altura, q.rgba));
                 }
             }
@@ -579,26 +592,35 @@ impl App {
                 self.painel_audio.nivel_mic = nivel;
             }
             Evento::Quadro(q) if q.de_tela && !apresentando(&c.pessoas, &q.dono) => {}
+            Evento::Quadro(q) if !q.de_tela && !com_camera(&c.pessoas, &q.dono) => {}
             Evento::Quadro(q) => {
-                let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
                 match c
                     .videos
                     .iter_mut()
                     .find(|v| v.dono == q.dono && v.de_tela == q.de_tela)
                 {
+                    // Still uploading the last one, or the previous frame was not
+                    // drawn yet (window hidden): drop this one.
+                    Some(v)
+                        if v.subindo.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0)
+                            || !ui::video::aceita_quadro_de_video(&v.desenhado) => {}
                     Some(v) => {
-                        v.anterior = Some(std::mem::replace(&mut v.imagem, imagem));
-                        v.largura = q.largura;
-                        v.altura = q.altura;
+                        v.subindo = Some(std::time::Instant::now());
+                        return ui::video::sobe_quadro(q);
                     }
-                    None => c.videos.push(Video {
-                        dono: q.dono,
-                        de_tela: q.de_tela,
-                        largura: q.largura,
-                        altura: q.altura,
-                        imagem,
-                        anterior: None,
-                    }),
+                    None => {
+                        let imagem = image::Handle::from_rgba(q.largura, q.altura, q.rgba);
+                        c.videos.push(Video {
+                            dono: q.dono,
+                            de_tela: q.de_tela,
+                            largura: q.largura,
+                            altura: q.altura,
+                            imagem: imagem.clone(),
+                            alocacao: None,
+                            subindo: None,
+                            desenhado: Default::default(),
+                        });
+                    }
                 }
             }
             Evento::VideoFechou { dono, de_tela } => {
@@ -686,4 +708,8 @@ impl App {
 /// A pessoa `id` está transmitindo a tela agora?
 fn apresentando(pessoas: &[crate::sala::Pessoa], id: &str) -> bool {
     pessoas.iter().any(|p| p.id == id && p.apresentando)
+}
+
+fn com_camera(pessoas: &[crate::sala::Pessoa], id: &str) -> bool {
+    pessoas.iter().any(|p| p.id == id && p.com_camera)
 }

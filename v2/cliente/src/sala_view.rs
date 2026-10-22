@@ -164,6 +164,14 @@ impl SalaAberta {
             camadas.push(ui::reacao::banner_cutucada(aviso));
         }
 
+        if let Some(prev) = &self.previa_camera {
+            camadas.push(ui::efeitos::janela(
+                "camera",
+                ui::camera::painel_previa_camera(prev),
+                0.65,
+            ));
+        }
+
         if let Some(cfg) = &self.config_tela {
             camadas.push(ui::efeitos::janela(
                 "tela",
@@ -267,6 +275,7 @@ impl SalaAberta {
                 .iter()
                 .find(|p| !p.espectador && p.uid.as_deref() == Some(m.uid.as_str()));
             pessoas.push(ui::palco::PessoaNoPalco {
+                conversa: &conv.id,
                 uid: &m.uid,
                 nome: &m.name,
                 usuario: m.usuario.as_deref(),
@@ -278,6 +287,14 @@ impl SalaAberta {
                     conexao.is_some_and(|p| p.mudo || p.surdo)
                 },
                 chamando,
+                com_camera: !chamando
+                    && self.videos.iter().any(|v| {
+                        !v.de_tela
+                            && self
+                                .pessoas
+                                .iter()
+                                .any(|p| p.id == v.dono && p.uid.as_deref() == Some(m.uid.as_str()))
+                    }),
             });
         }
         // Wordle durante a chamada: modo apresentação, com as pessoas ao lado.
@@ -390,14 +407,34 @@ impl SalaAberta {
             .as_ref()
             .is_some_and(|(d, t)| self.videos.iter().any(|v| v.dono == *d && v.de_tela == *t));
         let mut col_midia = Column::new();
-        if foco_ativo {
+        // Divider dragged: the stage has that height and the chat takes the rest.
+        let altura_palco = self.altura_palco.filter(|_| self.na_chamada);
+        if foco_ativo && altura_palco.is_none() {
             // Transmissão em foco: a área de mídia ganha ~60% da altura.
             col_midia = col_midia.height(Length::FillPortion(3));
         }
         let mut tem_midia = false;
 
         let tem_palco = if let Some(p) = self.palco(info, avisos) {
-            col_midia = col_midia.push(p);
+            let p: Element<'a, Msg> = match altura_palco {
+                Some(h) => container(p)
+                    .center_y(Length::Fixed(h))
+                    .width(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(iced::Background::Color(tema::cores().palco)),
+                        ..Default::default()
+                    })
+                    .into(),
+                None => p,
+            };
+            col_midia = col_midia.push(
+                iced::widget::sensor(p)
+                    .on_show(|t| Msg::PalcoMedido(t.height))
+                    .on_resize(|t| Msg::PalcoMedido(t.height)),
+            );
+            if self.na_chamada {
+                col_midia = col_midia.push(divisoria_do_palco(self.arrasto_palco.is_some()));
+            }
             tem_midia = true;
             true
         } else {
@@ -433,12 +470,6 @@ impl SalaAberta {
                     .width(Length::Fill)
                     .style(tema::painel_lateral),
             );
-            col_midia = col_midia.push(linha_horizontal());
-            tem_midia = true;
-        }
-        if let Some(prev) = &self.previa_camera {
-            col_midia =
-                col_midia.push(container(ui::camera::painel_previa_camera(prev)).padding([10, 16]));
             col_midia = col_midia.push(linha_horizontal());
             tem_midia = true;
         }
@@ -480,7 +511,7 @@ impl SalaAberta {
             tem_midia = true;
         }
 
-        let mut col_chat = Column::new().height(if foco_ativo {
+        let mut col_chat = Column::new().height(if foco_ativo && altura_palco.is_none() {
             Length::FillPortion(2)
         } else {
             Length::Fill
@@ -650,7 +681,7 @@ impl SalaAberta {
             .id("chat-rascunho-input")
             .padding([10, 12])
             .size(14)
-            .style(tema::campo);
+            .style(tema::campo_mensagem);
 
         if !wordle_ativo {
             campo = campo
@@ -678,7 +709,7 @@ impl SalaAberta {
         // Com o popup aberto, a dica sairia em cima dele (como na barra da chamada).
         let mais_aberto = self.painel == Some(PainelFlutuante::Mais);
         let botao_mais = botao_icone(
-            icones::mais(),
+            icones::mais_circulo(),
             mais_aberto,
             false,
             Some(Msg::AlternaMenuMais),
@@ -784,13 +815,16 @@ impl SalaAberta {
                 .push({
                     let id_nome = format!("nome-{}", m.id);
                     let t = anim::t(&id_nome);
-                    let cores = tema::cores();
-                    let cor = tema::mistura(cores.texto, cores.destaque, t);
+                    let cor = tema::mistura(tema::texto_forte(), iced::Color::WHITE, t);
                     ui::efeitos::com_hover(
                         &id_nome,
-                        iced::widget::mouse_area(
-                            text(&m.autor).size(14).font(negrito()).color(cor),
-                        )
+                        iced::widget::mouse_area(ui::nome::nome_de(
+                            m.uid.as_deref().unwrap_or(""),
+                            &m.autor,
+                            15.0,
+                            cor,
+                            negrito(),
+                        ))
                         .interaction(iced::mouse::Interaction::Pointer)
                         .on_press(Msg::AbrePrevia {
                             uid: m.uid.clone(),
@@ -799,7 +833,11 @@ impl SalaAberta {
                         }),
                     )
                 })
-                .push(text(ui::conversa::quando(m.ts)).size(12).style(fraco))
+                .push(ui::texto_sel::texto_sel(
+                    ui::conversa::quando(m.ts),
+                    11.5,
+                    tema::texto_apagado(),
+                ))
                 .spacing(8)
                 .align_y(Alignment::Center);
 
@@ -869,15 +907,41 @@ impl SalaAberta {
                 .width(Length::Shrink)
                 .height(Length::Shrink)
                 .content_fit(iced::ContentFit::ScaleDown);
-            let img_elem = iced::widget::mouse_area(img_elem)
-                .on_enter(Msg::HoverGif(Some(chave_gif)))
+            // Hover: outline; pressed: the selection color, like selected text.
+            let (hover, pressionada) = (
+                crate::gifanim::em_hover(&chave_gif),
+                crate::gifanim::pressionada(&chave_gif),
+            );
+            let c = tema::cores();
+            let realce =
+                container(space().width(Length::Fill).height(Length::Fill)).style(move |_| {
+                    container::Style {
+                        background: pressionada.then_some(iced::Background::Color(iced::Color {
+                            a: 0.35,
+                            ..c.destaque
+                        })),
+                        border: iced::Border {
+                            color: if hover || pressionada {
+                                c.destaque
+                            } else {
+                                iced::Color::TRANSPARENT
+                            },
+                            width: 2.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                });
+            let img_elem = iced::widget::mouse_area(iced::widget::stack![img_elem, realce])
+                .on_enter(Msg::HoverGif(Some(chave_gif.clone())))
                 .on_exit(Msg::HoverGif(None));
             // Clique abre a prévia grande no próprio app (GIF e imagem).
             let titulo = if m.gif.is_some() { "GIF" } else { "Imagem" };
             corpo = corpo.push(
                 img_elem
                     .interaction(iced::mouse::Interaction::Pointer)
-                    .on_press(Msg::AbreImagemMensagem {
+                    .on_press(Msg::PressionaImagem(chave_gif))
+                    .on_release(Msg::AbreImagemMensagem {
                         id: m.id.clone(),
                         titulo: format!("{titulo} de {}", m.autor),
                     })
@@ -912,17 +976,15 @@ impl SalaAberta {
         );
         let mut cont = container(corpo)
             .padding(iced::Padding {
-                top: if cabecalho { 10.0 } else { 0.0 },
-                bottom: if me_mencionou || m.sussurro { 4.0 } else { 0.0 },
-                left: if me_mencionou || m.sussurro { 8.0 } else { 0.0 },
-                right: if me_mencionou || m.sussurro { 8.0 } else { 0.0 },
+                top: if cabecalho { 14.0 } else { 0.0 },
+                bottom: if m.sussurro { 4.0 } else { 0.0 },
+                left: if m.sussurro { 8.0 } else { 0.0 },
+                right: if m.sussurro { 8.0 } else { 0.0 },
             })
             .width(Length::Fill);
 
         if m.sussurro {
             cont = cont.style(tema::destaque_sussurro);
-        } else if me_mencionou {
-            cont = cont.style(tema::destaque_mencao);
         }
         // Coluna do avatar (40px): a foto no primeiro da sequência, vazio nos
         // seguintes, para o texto alinhar.
@@ -944,7 +1006,7 @@ impl SalaAberta {
                 }),
             )
             .padding(iced::Padding {
-                top: 10.0,
+                top: 14.0,
                 ..Default::default()
             })
             .into()
@@ -955,30 +1017,63 @@ impl SalaAberta {
         let c = tema::cores();
         let t = anim::t(&id_hover);
         let linha =
-            container(row![lateral, cont, space().height(28)].spacing(12)).style(move |_| {
-                container::Style {
-                    background: (t > 0.01).then_some(iced::Background::Color(iced::Color {
+            // Altura mínima de 24: cabe a barra de hover (que fica por cima da
+            // linha) sem afastar as mensagens seguidas.
+            container(row![lateral, cont, space().height(24)].spacing(12)).style(move |_| {
+                // Menção a mim: a linha inteira (avatar incluso) com fundo
+                // âmbar suave e uma faixa à esquerda, como no Discord.
+                let fundo = if me_mencionou {
+                    Some(tema::mistura(
+                        tema::mistura(c.fundo, c.alerta, 0.09),
+                        c.texto,
+                        0.05 * t,
+                    ))
+                } else {
+                    (t > 0.01).then_some(iced::Color {
                         a: 0.05 * t,
                         ..c.texto
-                    })),
+                    })
+                };
+                container::Style {
+                    background: fundo.map(iced::Background::Color),
+                    border: iced::Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }
+            })
+            .padding(iced::Padding {
+                left: 4.0,
+                bottom: if me_mencionou { 2.0 } else { 0.0 },
+                ..Default::default()
             });
-        let conteudo: Element<'a, Msg> = if anim::dentro(&id_hover) {
-            iced::widget::stack![
-                linha,
-                container(ui::mensagem::barra_hover(&m.id, &m.autor, &m.texto))
-                    .width(Length::Fill)
-                    .align_x(Alignment::End)
-                    .padding(iced::Padding {
-                        right: 8.0,
-                        ..Default::default()
-                    })
-            ]
-            .into()
+        let linha: Element<'a, Msg> = if me_mencionou {
+            let faixa =
+                container(space().width(2).height(Length::Fill)).style(move |_| container::Style {
+                    background: Some(iced::Background::Color(c.alerta)),
+                    ..Default::default()
+                });
+            iced::widget::stack![linha, faixa].into()
         } else {
             linha.into()
         };
+        // Always a two-layer stack: switching between a stack and a plain row on
+        // hover rebuilt the widget tree of the whole message, which dropped text
+        // selections and the link hover.
+        let barra: Element<'a, Msg> = if anim::dentro(&id_hover) {
+            container(ui::mensagem::barra_hover(&m.id, &m.autor, &m.texto))
+                .width(Length::Fill)
+                .align_x(Alignment::End)
+                .padding(iced::Padding {
+                    right: 8.0,
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            space().into()
+        };
+        let conteudo: Element<'a, Msg> = iced::widget::stack![linha, barra].into();
         iced::widget::mouse_area(conteudo)
             .on_enter(Msg::Hover(id_hover.clone(), true))
             .on_exit(Msg::Hover(id_hover, false))
@@ -1023,4 +1118,25 @@ fn card_de_arquivo<'a>(a: &'a sala::ArquivoMsg) -> Element<'a, Msg> {
         ..Default::default()
     })
     .into()
+}
+
+/// The bar between the call stage and the chat: drag to resize the stage,
+/// double click to go back to its natural size (like Discord).
+fn divisoria_do_palco<'a>(arrastando: bool) -> Element<'a, Msg> {
+    let id = "divisoria-palco";
+    let t = if arrastando { 1.0 } else { crate::anim::t(id) };
+    let c = tema::cores();
+    let barra = container(space().width(Length::Fill).height(2)).style(move |_| container::Style {
+        background: Some(iced::Background::Color(tema::mistura(
+            c.borda, c.destaque, t,
+        ))),
+        ..Default::default()
+    });
+    ui::efeitos::com_hover(
+        id,
+        iced::widget::mouse_area(container(barra).padding([3, 0]).width(Length::Fill))
+            .interaction(iced::mouse::Interaction::ResizingVertically)
+            .on_press(Msg::ArrastaPalco)
+            .on_double_click(Msg::RestauraPalco),
+    )
 }

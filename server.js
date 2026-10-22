@@ -1093,6 +1093,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // --- Cosméticos de perfil -------------------------------------------------
+  // Arquivos (decoração de avatar, placa, efeito, moldura) servidos de
+  // `COSMETICOS_DIR`, sem sessão: quem vê o seu perfil precisa baixar a sua
+  // decoração. Nome do arquivo nunca muda de conteúdo, por isso `immutable`.
+  if (url.pathname.startsWith('/cosmeticos/') && req.method === 'GET') {
+    const rel = decodeURIComponent(url.pathname.slice('/cosmeticos/'.length));
+    if (!/^[a-z0-9_-]+(\/[a-z0-9_-]+)*\.(webp|png)$/i.test(rel)) { res.writeHead(404); res.end(); return; }
+    const arquivo = path.join(COSMETICOS_DIR, rel);
+    fs.stat(arquivo, (err, st) => {
+      if (err || !st.isFile()) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, {
+        'Content-Type': rel.endsWith('.webp') ? 'image/webp' : 'image/png',
+        'Content-Length': st.size,
+        'Cache-Control': 'public, max-age=31536000, immutable'
+      });
+      fs.createReadStream(arquivo).pipe(res);
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/cosmeticos' && req.method === 'GET') {
+    responde(res, 200, { itens: cosmeticosCatalogo().publico });
+    return;
+  }
+
+  // Quem tem algum cosmético escolhido: { uid: cosmeticos }. Poucas contas,
+  // então vai tudo de uma vez; mudanças chegam depois pelo aviso `cosmeticos`.
+  if (url.pathname === '/api/cosmeticos/pessoas' && req.method === 'GET') {
+    const cookies = parseCookies(req);
+    const session = cookies.session && sessions.get(cookies.session);
+    if (!session) { responde(res, 401, { erro: 'Entre na sua conta primeiro.' }); return; }
+    const pessoas = {};
+    for (const conta of contas.values()) {
+      const c = cosmeticosParaEnvio(conta.perfil && conta.perfil.cosmeticos);
+      if (c) pessoas['local:' + conta.id] = c;
+    }
+    responde(res, 200, { pessoas });
+    return;
+  }
+
+  if (url.pathname === '/api/conta/cosmeticos' && req.method === 'POST') {
+    const cookies = parseCookies(req);
+    const session = cookies.session && sessions.get(cookies.session);
+    if (!session || session.tipo !== 'local') { responde(res, 401, { erro: 'Entre na sua conta primeiro.' }); return; }
+    const conta = contas.get(session.usuario);
+    if (!conta) { responde(res, 404, { erro: 'Conta não encontrada.' }); return; }
+    const corpo = await leJsonDoCorpo(req);
+    if (!corpo || typeof corpo !== 'object') { responde(res, 400, { erro: 'corpo inválido' }); return; }
+    const limpo = limpaCosmeticos(corpo);
+    if (limpo.erro) { responde(res, 400, { erro: limpo.erro }); return; }
+    conta.perfil = conta.perfil || {};
+    if (limpo.valor) conta.perfil.cosmeticos = limpo.valor; else delete conta.perfil.cosmeticos;
+    saveContas();
+    // Todo mundo conectado: a decoração aparece em lista de membros, chat e
+    // chamada, inclusive para quem não é amigo (membro de um grupo em comum).
+    const enviado = cosmeticosParaEnvio(limpo.valor);
+    avisaUids([...avisosPorUid.keys()], { type: 'cosmeticos', uid: 'local:' + conta.id, cosmeticos: enviado });
+    responde(res, 200, { ok: true, cosmeticos: enviado });
+    return;
+  }
+
   // --- editar o próprio perfil (fatia 4) ---
   // Nome de exibição e descrição. O nome de USUÁRIO não muda aqui de
   // propósito: ele é a arroba com que as pessoas te citam e o identificador
@@ -2728,6 +2789,121 @@ function limpaCor(v) {
   return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : null;
 }
 
+// --- Cosméticos de perfil ----------------------------------------------------
+// `COSMETICOS_DIR/catalogo.json`: lista de itens { tipo, id, nome, categoria,
+// arquivo_webp, arquivo_previa, ... }. Os arquivos não vão no repositório: a
+// pasta é copiada à parte para o servidor. Sem a pasta, o catálogo fica vazio
+// e o resto funciona. Relido quando o arquivo muda (itens novos sem restart).
+const COSMETICOS_DIR = process.env.COSMETICOS_DIR || path.join(__dirname, 'cosmeticos');
+const COSMETICO_TIPOS = {
+  decoracao_avatar: 'decoracao',
+  placa_identificacao: 'placa',
+  efeito_perfil: 'efeito',
+  moldura_perfil: 'moldura'
+};
+// Coleção -> grupo do filtro "Temas". Coleção que não está aqui é "originais".
+const COSMETICO_GRUPOS = {
+  'Jujutsu Kaisen': 'anime', 'My Hero Academia': 'anime', 'Anime': 'anime',
+  'Dead by Daylight': 'jogos', 'Palworld': 'jogos', 'Street Fighter 6': 'jogos',
+  'Cyberpunk': 'jogos', 'Arcane': 'filmes', 'Toy Story': 'filmes',
+  'O Estranho Mundo de Jack': 'filmes'
+};
+let cosmeticosCache = { mtime: -1, publico: [], porId: new Map() };
+function cosmeticosCatalogo() {
+  const arq = path.join(COSMETICOS_DIR, 'catalogo.json');
+  let mtime;
+  try { mtime = fs.statSync(arq).mtimeMs; } catch { mtime = 0; }
+  if (mtime === cosmeticosCache.mtime) return cosmeticosCache;
+  const publico = [];
+  const porId = new Map();
+  if (mtime) {
+    try {
+      const lista = JSON.parse(fs.readFileSync(arq, 'utf8'));
+      for (const it of Array.isArray(lista) ? lista : []) {
+        const tipo = it && COSMETICO_TIPOS[it.tipo];
+        if (!tipo || typeof it.id !== 'string' || !/^[a-z0-9_-]{1,80}$/i.test(it.id)) continue;
+        if (typeof it.arquivo_webp !== 'string' || porId.has(it.id)) continue;
+        // `?v=`: o arquivo pode ser trocado por uma versão melhor com o mesmo
+        // nome; a versão muda a URL e quem tinha a antiga em cache baixa de novo.
+        const versao = rel => {
+          try { return '?v=' + Math.round(fs.statSync(path.join(COSMETICOS_DIR, rel)).mtimeMs).toString(36); } catch { return ''; }
+        };
+        const item = {
+          id: it.id,
+          tipo,
+          nome: String(it.nome || it.id).slice(0, 160),
+          descricao: typeof it.descricao === 'string' ? it.descricao.slice(0, 300) : '',
+          categoria: String(it.categoria || 'Outros').slice(0, 60),
+          grupo: typeof it.grupo === 'string' ? it.grupo : (COSMETICO_GRUPOS[it.categoria] || 'originais'),
+          arquivo: '/cosmeticos/' + it.arquivo_webp + versao(it.arquivo_webp),
+          previa: typeof it.arquivo_mini === 'string' ? '/cosmeticos/' + it.arquivo_mini + versao(it.arquivo_mini) : null,
+          // Moldura: "topo" (faixa no alto do cartão) ou "inteira" (em volta dele).
+          ancora: it.ancora === 'inteira' ? 'inteira' : 'topo'
+        };
+        publico.push(item);
+        porId.set(it.id, item);
+      }
+    } catch (e) {
+      console.error('catálogo de cosméticos ilegível:', e.message);
+    }
+  }
+  cosmeticosCache = { mtime, publico, porId };
+  return cosmeticosCache;
+}
+
+// A escolha guardada leva só ids; o arquivo vem do catálogo de agora (que
+// pode ter trocado a imagem). Item que saiu do catálogo some da escolha.
+function cosmeticosParaEnvio(c) {
+  if (!c) return null;
+  const { porId } = cosmeticosCatalogo();
+  const saida = {};
+  for (const [k, v] of Object.entries(c)) {
+    if (['decoracao', 'placa', 'efeito', 'moldura'].includes(k)) {
+      const item = v && porId.get(v.id);
+      if (item) saida[k] = { id: item.id, arquivo: item.arquivo };
+    } else {
+      saida[k] = v;
+    }
+  }
+  return Object.keys(saida).length ? saida : null;
+}
+
+// Valida o que o cliente mandou. Cada campo é o id de um item do catálogo do
+// tipo certo, ou ausente. O estilo do nome segue a regra de `limpaIdentificador`:
+// o servidor não conhece a lista de fontes/efeitos, quem sabe desenhar é o app.
+function limpaCosmeticos(corpo) {
+  const { porId } = cosmeticosCatalogo();
+  const valor = {};
+  for (const campo of ['decoracao', 'placa', 'efeito', 'moldura']) {
+    const v = corpo[campo];
+    if (v === undefined || v === null || v === '') continue;
+    const item = typeof v === 'string' && porId.get(v);
+    if (!item || item.tipo !== campo) return { erro: `Item desconhecido: ${String(v).slice(0, 40)}` };
+    valor[campo] = { id: item.id };
+  }
+  const n = corpo.nome;
+  if (n && typeof n === 'object') {
+    const nome = {};
+    const fonte = limpaIdentificador(n.fonte);
+    const efeito = limpaIdentificador(n.efeito);
+    const cor = limpaCor(n.cor);
+    const cor2 = limpaCor(n.cor2);
+    if (fonte) nome.fonte = fonte;
+    if (efeito) nome.efeito = efeito;
+    if (cor) nome.cor = cor;
+    if (cor2) nome.cor2 = cor2;
+    if (Object.keys(nome).length) valor.nome = nome;
+  }
+  const t = corpo.tema;
+  if (t && typeof t === 'object') {
+    const cor1 = limpaCor(t.cor1);
+    const cor2 = limpaCor(t.cor2);
+    if (cor1 && cor2) valor.tema = { cor1, cor2 };
+  }
+  return { valor: Object.keys(valor).length ? valor : null };
+}
+
+
 // O banner sem imagem é uma cor (`#rrggbb`) ou o id de um degradê. Como no
 // estilo de nome, **o servidor não conhece a lista de degradês** — ele só
 // exige forma de identificador, e quem sabe pintar é o CSS. É isso que faz um
@@ -3100,7 +3276,8 @@ function cartaoDaConta(conta, quemPergunta) {
     status: vivo ? statusDe(chave) : 'offline',
     emChamada,
     atividade,
-    statusCustom: invisivelParaQuem ? null : statusCustomDe(conta)
+    statusCustom: invisivelParaQuem ? null : statusCustomDe(conta),
+    cosmeticos: cosmeticosParaEnvio(conta.perfil && conta.perfil.cosmeticos)
   };
 }
 
@@ -4019,7 +4196,7 @@ wss.on('connection', (ws, req) => {
     // --- Toque ---------------------------------------------------------
     // Valem em qualquer conexão com sessão (canal de avisos ou sala): quem
     // decide é o uid da SESSÃO e a lista de membros, nunca texto do cliente.
-    if (msg.type === 'ligar' || msg.type === 'recusar' || msg.type === 'tocar-de-novo') {
+    if (msg.type === 'ligar' || msg.type === 'recusar' || msg.type === 'tocar-de-novo' || msg.type === 'parar-toque') {
       const c = conversaPorId(msg.conversa);
       if (!myUid || !c || !ehMembro(c, myUid)) {
         safeSend(ws, JSON.stringify({ type: 'toque-erro', conversa: msg.conversa, motivo: 'nao-membro' }));
@@ -4039,8 +4216,17 @@ wss.on('connection', (ws, req) => {
         fimDoToque(c.id, myUid, 'recusou');
         return;
       }
-      // tocar-de-novo: quem está dentro, para um membro que está fora.
       const alvo = typeof msg.uid === 'string' ? msg.uid : '';
+      // parar-toque: quem está dentro para de chamar um membro que está tocando.
+      if (msg.type === 'parar-toque') {
+        if (!quemEstaNaChamada(c.id).includes(myUid) || !toqueAtivoDe(c.id, alvo)) {
+          safeSend(ws, JSON.stringify({ type: 'toque-erro', conversa: c.id, motivo: 'sem-toque' }));
+          return;
+        }
+        fimDoToque(c.id, alvo, 'cancelado');
+        return;
+      }
+      // tocar-de-novo: quem está dentro, para um membro que está fora.
       const dentro = quemEstaNaChamada(c.id);
       let erro = null;
       if (!dentro.includes(myUid)) erro = 'nao-esta-na-chamada';

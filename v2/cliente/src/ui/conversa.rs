@@ -6,6 +6,7 @@ use iced::widget::{button, container, row, space, svg, text};
 use iced::{Alignment, Background, Border, Element, Length};
 
 use crate::avisos::{Conversa, Membro};
+use crate::ui::texto_sel::texto_sel;
 use crate::{Msg, botao_icone, fraco, icones, negrito, tema, ui};
 
 const MESES: [&str; 12] = [
@@ -45,17 +46,21 @@ pub fn mesmo_dia(a_ms: i64, b_ms: i64) -> bool {
     dia_local(a_ms) == dia_local(b_ms)
 }
 
-/// "Hoje às 15:40", "Ontem às 22:03" ou "13/10/2026 15:40".
+/// Horário da mensagem como no Discord: só a hora hoje ("22:54"),
+/// "Ontem às 22:41" ontem e a data inteira antes ("19/10/2026, 22:41").
 pub fn quando(ts_ms: i64) -> String {
+    quando_em(ts_ms, Local::now().date_naive())
+}
+
+fn quando_em(ts_ms: i64, hoje: NaiveDate) -> String {
     let Some(d) = Local.timestamp_millis_opt(ts_ms).single() else {
         return String::new();
     };
-    let hoje = Local::now().date_naive();
     let hora = d.format("%H:%M");
     match (hoje - d.date_naive()).num_days() {
-        0 => format!("Hoje às {hora}"),
+        0 => hora.to_string(),
         1 => format!("Ontem às {hora}"),
-        _ => format!("{} {hora}", d.format("%d/%m/%Y")),
+        _ => format!("{}, {hora}", d.format("%d/%m/%Y")),
     }
 }
 
@@ -87,15 +92,15 @@ fn texto_com_nome<'a>(conteudo: &str, quem: Option<&str>, cor: iced::Color) -> E
         .filter(|q| !q.is_empty())
         .and_then(|q| conteudo.find(q).map(|p| (q, p)))
     else {
-        return text(conteudo.to_string()).size(14).color(cor).into();
+        return texto_sel(conteudo, 14.0, cor).into();
     };
     let (antes, depois) = (&conteudo[..pos], &conteudo[pos + nome.len()..]);
     let id = format!("sis-nome-{nome}");
     let t = crate::anim::t(&id);
-    let c = tema::cores();
-    let cor_nome = tema::mistura(cor, c.destaque, t);
+    // Como no Discord: a frase apagada, o nome em branco.
+    let cor_nome = tema::mistura(tema::texto_forte(), iced::Color::WHITE, t);
     row![
-        text(antes.to_string()).size(14).color(cor),
+        texto_sel(antes, 14.0, cor),
         crate::ui::efeitos::com_hover(
             &id,
             iced::widget::mouse_area(
@@ -111,13 +116,13 @@ fn texto_com_nome<'a>(conteudo: &str, quem: Option<&str>, cor: iced::Color) -> E
                 app: false,
             }),
         ),
-        text(depois.to_string()).size(14).color(cor),
+        texto_sel(depois, 14.0, cor),
     ]
     .into()
 }
 
-/// Mensagem de sistema. Chamada em verde, perdida em vermelho; entrada no
-/// grupo seta verde, saída seta vermelha; o resto neutro.
+/// Mensagem de sistema. O ícone diz o tipo (chamada verde, perdida vermelha,
+/// entrada seta verde, saída seta vermelha); o texto é sempre apagado.
 pub fn linha_de_sistema<'a>(
     tipo: &str,
     texto: &'a str,
@@ -134,7 +139,7 @@ pub fn linha_de_sistema<'a>(
         (
             icones::chamada_perdida(),
             c.perigo,
-            c.texto_medio,
+            c.texto_fraco,
             format!(
                 "Você perdeu uma chamada de {} que durou {}.",
                 extra.quem.as_deref().unwrap_or(""),
@@ -146,25 +151,25 @@ pub fn linha_de_sistema<'a>(
             "chamada" => (
                 icones::chamada(),
                 c.sucesso_forte,
-                c.sucesso_forte,
+                c.texto_fraco,
                 texto.to_string(),
             ),
             "perdida" => (
                 icones::chamada_perdida(),
                 c.perigo,
-                c.perigo,
+                c.texto_fraco,
                 texto.to_string(),
             ),
             _ if texto.contains(" adicionou ") || texto.contains(" entrou ") => (
                 icones::seta_direita(),
                 c.sucesso_forte,
-                c.texto_medio,
+                c.texto_fraco,
                 texto.to_string(),
             ),
             _ if texto.contains(" removeu ") || texto.contains(" saiu ") => (
                 icones::esquerda(),
                 c.perigo,
-                c.texto_medio,
+                c.texto_fraco,
                 texto.to_string(),
             ),
             _ => (
@@ -182,7 +187,7 @@ pub fn linha_de_sistema<'a>(
                 .height(16)
                 .style(tema::icone_cor(cor_icone)),
             texto_com_nome(&conteudo, extra.quem.as_deref(), cor_texto),
-            text(quando(ts_ms)).size(12).style(fraco),
+            texto_sel(quando(ts_ms), 11.5, tema::texto_apagado()),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -495,9 +500,17 @@ mod testes {
 
     #[test]
     fn quando_hoje_e_ontem() {
-        let agora = Local::now().timestamp_millis();
-        assert!(quando(agora).starts_with("Hoje às "));
-        assert!(quando(agora - 24 * 3600 * 1000).starts_with("Ontem às "));
-        assert!(quando(agora - 5 * 24 * 3600 * 1000).contains('/'));
+        let ts = |d: u32, h: u32, m: u32| {
+            Local
+                .with_ymd_and_hms(2026, 10, d, h, m, 0)
+                .single()
+                .unwrap()
+                .timestamp_millis()
+        };
+        let hoje = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        assert_eq!(quando_em(ts(21, 22, 54), hoje), "22:54");
+        assert_eq!(quando_em(ts(21, 0, 5), hoje), "00:05");
+        assert_eq!(quando_em(ts(20, 22, 41), hoje), "Ontem às 22:41");
+        assert_eq!(quando_em(ts(19, 22, 41), hoje), "19/10/2026, 22:41");
     }
 }
