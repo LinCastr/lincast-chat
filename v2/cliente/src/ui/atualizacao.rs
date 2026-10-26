@@ -247,6 +247,18 @@ pub fn instala(info: &InfoAtualizacao) -> Result<String, String> {
         }
         troca_arquivo(&pasta.join("concord-audio"), &dir.join("concord-audio"))?;
         troca_arquivo(&pasta.join("lincast-chat"), &exe)?;
+        // Se o pacote trouxer o ícone do sistema, atualiza também em ~/.local/share/icons
+        let icone_origem = pasta.join("icone-256.png");
+        if icone_origem.is_file() {
+            if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+                let destino_icone =
+                    home.join(".local/share/icons/hicolor/256x256/apps/lincast-chat.png");
+                if let Some(pai) = destino_icone.parent() {
+                    let _ = std::fs::create_dir_all(pai);
+                }
+                let _ = std::fs::copy(&icone_origem, &destino_icone);
+            }
+        }
         Ok(info.versao.trim_start_matches(['v', 'V']).to_string())
     })();
     let _ = std::fs::remove_dir_all(&tmp);
